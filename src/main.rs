@@ -37,10 +37,13 @@ fn main() -> io::Result<()> {
     // ADR-1: 单一 fan-in channel(所有事件源 → AppMsg → 主 loop)。
     let (tx, rx) = std::sync::mpsc::sync_channel::<AppMsg>(256);
 
-    // TUI 启动
+    // ──── 终端初始化(顺序: raw → alt screen → mouse) ────
     enable_raw_mode()?;
+    // Guard 紧跟 enable_raw_mode: 任何退出路径(正常/error/panic)都经 Drop 恢复终端。
+    let _guard = TerminalGuard;
+
     let mut out = stdout();
-    execute!(out, crossterm::event::EnableMouseCapture)?;
+    execute!(out, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
 
     let model = Arc::new(RwLock::new(Model::new()));
@@ -69,12 +72,20 @@ fn main() -> io::Result<()> {
     // T2: 启动时立即拉一次数据(ADR-5)
     svc.execute(vec![update::Cmd::RefreshAgents]);
 
-    let result = run_loop(&mut term, &rx, &model, &mut shell, &mut svc, &tx);
+    run_loop(&mut term, &rx, &model, &mut shell, &mut svc, &tx)
+}
 
-    // restore
-    execute!(term.backend_mut(), crossterm::event::DisableMouseCapture)?;
-    execute!(term.backend_mut(), LeaveAlternateScreen)?;
-    result
+/// RAII 终端恢复守卫。Drop 时无条件执行 best-effort 清理:
+/// 退出 alt screen → 关闭 mouse capture → 关闭 raw mode。
+/// 放在 enable_raw_mode 之后即可覆盖所有退出路径(含 panic unwind)。
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let mut out = std::io::stdout();
+        let _ = execute!(out, crossterm::event::DisableMouseCapture, LeaveAlternateScreen);
+        let _ = disable_raw_mode();
+    }
 }
 
 /// MVU 主 loop(ADR-1+ADR-2)。
