@@ -84,6 +84,10 @@ pub enum Cmd {
     PersistSnippet { name: String, text: String },
     /// 移除代码片段。
     RemoveSnippet { name: String },
+    /// 持久化告警规则到 DB。
+    PersistAlertRule(crate::model::AlertRule),
+    /// 移除告警规则。
+    RemoveAlertRule { id: i64 },
     /// 无操作。
     Noop,
     /// 退出。
@@ -197,6 +201,7 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
                 })
                 .collect();
             for (handle, sev, text) in transitions {
+                let sev_str = sev.as_str();
                 cmds.push(note_event(model, sev, EventCategory::State, &handle, text));
                 // ── Pin alert: proactive toast for pinned agents ──
                 if model.pinned.contains(&handle) {
@@ -204,6 +209,17 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
                         let new_cat = StatusCategory::from_agent(agent);
                         shell.push_toast(format!("📌 {} → {}", handle, new_cat.label()));
                     }
+                }
+                // ── Alert rules check ──
+                let ctx = crate::model::CheckContext {
+                    handle: Some(&handle),
+                    new_state: model.directory.get(&handle).map(|a| StatusCategory::from_agent(a).label()),
+                    event_severity: Some(sev_str),
+                    event_source: Some(&handle),
+                    is_new_message: false,
+                };
+                for toast in crate::model::check_alert_rules(&model.alert_rules, &ctx) {
+                    shell.push_toast(toast);
                 }
             }
             cmds
@@ -249,6 +265,10 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             let mut cmds = vec![Cmd::PersistMessages(persist)];
             if n > 0 {
                 cmds.push(note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Received {n} messages")));
+                let ctx = crate::model::CheckContext { is_new_message: true, ..Default::default() };
+                for toast in crate::model::check_alert_rules(&model.alert_rules, &ctx) {
+                    shell.push_toast(toast);
+                }
             }
             cmds
         }
@@ -354,7 +374,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -430,6 +450,12 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             if shell.snippet_overlay_active {
                 shell.overlay_scroll = 0;
             }
+            return vec![];
+        }
+
+        (KeyCode::Char('N'), KeyModifiers::SHIFT) if !shell.insert_mode => {
+            shell.rule_overlay_active = !shell.rule_overlay_active;
+            if shell.rule_overlay_active { shell.overlay_scroll = 0; }
             return vec![];
         }
 
@@ -980,6 +1006,50 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![Cmd::Noop];
     }
 
+    // rule:add type:value / rule:rm:id — add/remove alert rule
+    if let Some(rest) = buf.strip_prefix("rule:") {
+        if let Some(id_str) = rest.strip_prefix("rm:") {
+            if let Ok(id) = id_str.trim().parse::<i64>() {
+                model.remove_alert_rule(id);
+                shell.push_toast(format!("alert rule removed: {id}"));
+                return vec![Cmd::RemoveAlertRule { id }];
+            }
+            return vec![];
+        }
+        if let Some(spec) = rest.strip_prefix("add ") {
+            // spec = "state:Error" or "source:term_abc" or "severity:Warn" or "message"
+            let spec = spec.trim();
+            if spec == "message" {
+                let rule = crate::model::AlertRule {
+                    id: 0,
+                    rule_type: crate::model::AlertRuleType::Message,
+                    value: String::new(),
+                    created_at_ms: crate::model::now_ms(),
+                };
+                model.add_alert_rule(rule.clone());
+                shell.push_toast("alert rule added: message".into());
+                return vec![Cmd::PersistAlertRule(rule)];
+            }
+            if let Some((rtype, value)) = spec.split_once(':') {
+                if let Some(rt) = crate::model::AlertRuleType::from_str(rtype) {
+                    let rule = crate::model::AlertRule {
+                        id: 0,
+                        rule_type: rt.clone(),
+                        value: value.to_string(),
+                        created_at_ms: crate::model::now_ms(),
+                    };
+                    model.add_alert_rule(rule.clone());
+                    shell.push_toast(format!("alert rule added: {}:{}", rt.as_str(), value));
+                    return vec![Cmd::PersistAlertRule(rule)];
+                }
+            }
+            shell.push_toast("rule: usage: rule:add state:Error | source:handle | severity:Warn | message".into());
+            return vec![];
+        }
+        shell.push_toast("rule: usage: rule:add <type>:<value> or rule:rm:<id>".into());
+        return vec![];
+    }
+
     vec![]
 }
 
@@ -1266,7 +1336,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.overlay_content = None;
             shell.overlay_scroll = 0;
             shell.worktree_ps_active = false;
-            shell.group_detail_active = false;
+            shell.rule_overlay_active = false;
             shell.cheatsheet_active = false;
             shell.config_overlay_active = false;
             shell.orch_tasks_active = false;
@@ -1304,6 +1374,20 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                 shell.insert_mode = true;
                 shell.focus = FocusTarget::Input;
                 shell.input_buf = format!("run:{}", name);
+            }
+            shell.overlay_scroll = 0;
+            vec![]
+        }
+
+        (KeyCode::Enter, KeyModifiers::NONE) if shell.rule_overlay_active => {
+            shell.rule_overlay_active = false;
+            let idx = shell.overlay_scroll.min(model.alert_rules.len().saturating_sub(1));
+            if let Some(rule) = model.alert_rules.get(idx) {
+                let id = rule.id;
+                model.remove_alert_rule(id);
+                shell.push_toast("alert rule removed".into());
+                shell.overlay_scroll = 0;
+                return vec![Cmd::RemoveAlertRule { id }];
             }
             shell.overlay_scroll = 0;
             vec![]
@@ -2015,5 +2099,20 @@ mod tests {
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
         assert!(shell.insert_mode);
         assert_eq!(shell.input_buf, "to:term_abc Hello");
+    }
+
+    #[test]
+    fn alert_rule_state_match() {
+        let mut model = Model::new();
+        model.add_alert_rule(crate::model::AlertRule {
+            id: 1, rule_type: crate::model::AlertRuleType::State,
+            value: "Error".to_string(), created_at_ms: 0,
+        });
+        let ctx = crate::model::CheckContext { new_state: Some("Error"), ..Default::default() };
+        let toasts = crate::model::check_alert_rules(&model.alert_rules, &ctx);
+        assert_eq!(toasts.len(), 1);
+        // Non-matching state
+        let ctx2 = crate::model::CheckContext { new_state: Some("Done"), ..Default::default() };
+        assert!(crate::model::check_alert_rules(&model.alert_rules, &ctx2).is_empty());
     }
 }

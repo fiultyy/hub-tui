@@ -342,6 +342,8 @@ pub struct Model {
     pub tags: HashMap<String, HashSet<String>>,
     /// 代码片段: name → command text(持久化到 DB)。
     pub snippets: HashMap<String, String>,
+    /// 告警规则列表(持久化到 DB)。
+    pub alert_rules: Vec<AlertRule>,
 }
 
 impl Model {
@@ -357,6 +359,7 @@ impl Model {
             unread_counts: HashMap::new(),
             worktree_ps: Vec::new(),
             tags: HashMap::new(),
+            alert_rules: Vec::new(),
             orch_snapshot: None,
             snippets: HashMap::new(),
             config: HashMap::new(),
@@ -552,6 +555,27 @@ impl Model {
     /// 启动时从 DB 加载代码片段(替换)。
     pub fn apply_snippets(&mut self, snippets: HashMap<String, String>) {
         self.snippets = snippets;
+    }
+
+    // ──── Alert Rules(告警规则)────
+
+    /// 添加告警规则(cap ALERT_RULES_CAP)。
+    pub fn add_alert_rule(&mut self, rule: AlertRule) {
+        if self.alert_rules.len() < ALERT_RULES_CAP {
+            self.alert_rules.push(rule);
+            self.generation += 1;
+        }
+    }
+
+    /// 按 id 移除告警规则。
+    pub fn remove_alert_rule(&mut self, id: i64) {
+        self.alert_rules.retain(|r| r.id != id);
+        self.generation += 1;
+    }
+
+    /// 启动时从 DB 加载规则(替换)。
+    pub fn apply_alert_rules(&mut self, rules: Vec<AlertRule>) {
+        self.alert_rules = rules;
     }
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
     pub fn push_history(&mut self, text: String) {
@@ -1093,6 +1117,8 @@ pub struct ModelSnapshot {
     pub computed_at_ms: i64,
     /// Top-5 tags by agent count (Dashboard 标签分布)。
     pub tag_counts: Vec<(String, usize)>,
+    /// Active alert rule count。
+    pub alert_rule_count: usize,
 }
 
 /// 计算 Dashboard 快照。纯计算, 无 IO。
@@ -1168,7 +1194,87 @@ pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
         tag_counts,
         pinned_count: pinned_in_dir,
         history_count: model.history.len(),
+        alert_rule_count: model.alert_rules.len(),
         event_recent_60s,
         computed_at_ms,
     }
+}
+
+// ───────────────────────── Alert Rules 告警规则 ─────────────────────────
+
+/// 告警规则上限。
+pub const ALERT_RULES_CAP: usize = 20;
+
+/// 告警规则类型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlertRuleType {
+    State,
+    Source,
+    Severity,
+    Message,
+}
+
+impl AlertRuleType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Source => "source",
+            Self::Severity => "severity",
+            Self::Message => "message",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "state" => Some(Self::State),
+            "source" => Some(Self::Source),
+            "severity" => Some(Self::Severity),
+            "message" => Some(Self::Message),
+            _ => None,
+        }
+    }
+}
+
+/// 一条告警规则。
+#[derive(Debug, Clone)]
+pub struct AlertRule {
+    pub id: i64,
+    pub rule_type: AlertRuleType,
+    pub value: String,
+    pub created_at_ms: i64,
+}
+
+/// 规则匹配上下文(由 update.rs 构造)。
+#[derive(Debug, Default)]
+pub struct CheckContext<'a> {
+    pub handle: Option<&'a str>,
+    pub new_state: Option<&'a str>,
+    pub event_severity: Option<&'a str>,
+    pub event_source: Option<&'a str>,
+    pub is_new_message: bool,
+}
+
+/// 评估告警规则。返回匹配规则的 toast 消息列表。纯计算。
+pub fn check_alert_rules(rules: &[AlertRule], ctx: &CheckContext) -> Vec<String> {
+    let mut toasts = Vec::new();
+    for rule in rules {
+        let matched = match rule.rule_type {
+            AlertRuleType::State => {
+                ctx.new_state.map_or(false, |s| s.eq_ignore_ascii_case(&rule.value))
+            }
+            AlertRuleType::Source => {
+                let h = ctx.handle.unwrap_or("");
+                let s = ctx.event_source.unwrap_or("");
+                h.eq_ignore_ascii_case(&rule.value) || s.eq_ignore_ascii_case(&rule.value)
+            }
+            AlertRuleType::Severity => {
+                ctx.event_severity.map_or(false, |s| s.eq_ignore_ascii_case(&rule.value))
+            }
+            AlertRuleType::Message => ctx.is_new_message,
+        };
+        if matched {
+            toasts.push(format!("🔔 alert: {}:{}", rule.rule_type.as_str(), rule.value));
+        }
+    }
+    toasts
 }

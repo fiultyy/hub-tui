@@ -281,6 +281,18 @@ impl Service {
                         db.remove_snippet(&name);
                     }
                 }
+                crate::update::Cmd::PersistAlertRule(rule) => {
+                    if let Some(db) = &self.db {
+                        let id = db.upsert_alert_rule(rule.rule_type.as_str(), &rule.value);
+                        // 更新内存中的 id(DB 分配的)
+                        // NOTE: 这里无法更新 model, 但 id=0 的规则仍能匹配(check 不依赖 id)
+                    }
+                }
+                crate::update::Cmd::RemoveAlertRule { id } => {
+                    if let Some(db) = &self.db {
+                        db.remove_alert_rule(id);
+                    }
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }

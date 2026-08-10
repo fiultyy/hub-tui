@@ -121,6 +121,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.snippet_overlay_active {
         draw_snippet_overlay(f, model, shell, area, &theme);
     }
+    // Alert Rules 浮层
+    if shell.rule_overlay_active {
+        draw_rule_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -1009,7 +1013,7 @@ fn status_hint(shell: &Shell) -> String {
         || shell.overlay_content.is_some()
         || shell.worktree_ps_active
         || shell.group_detail_active
-        || shell.config_overlay_active
+        || shell.rule_overlay_active
         || shell.orch_tasks_active
         || shell.history_overlay_active
         || shell.activity_active
@@ -1781,7 +1785,9 @@ fn draw_dashboard_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rec
         Span::styled("👥 Groups: ", Style::default().fg(theme.accent)),
         Span::styled(format!("{}  ", snap.group_count), Style::default().fg(theme.fg)),
         Span::styled("⌘ History: ", Style::default().fg(theme.accent)),
-        Span::styled(format!("{}", snap.history_count), Style::default().fg(theme.fg)),
+        Span::styled(format!("{}  ", snap.history_count), Style::default().fg(theme.fg)),
+        Span::styled("🚨 Rules: ", Style::default().fg(theme.accent)),
+        Span::styled(format!("{}", snap.alert_rule_count), Style::default().fg(theme.fg)),
     ]));
 
     // 尺寸 + 居中(同 activity overlay)
@@ -1909,6 +1915,42 @@ fn draw_snippet_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect,
     let inner = block.inner(overlay_area);
     f.render_widget(block, overlay_area);
 
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+/// Alert Rules 浮层: sorted by created_at_ms, shows rule type/value, scrollable.
+fn draw_rule_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+
+    let mut rules: Vec<_> = model.alert_rules.iter().collect();
+    rules.sort_by_key(|r| r.created_at_ms);
+
+    let lines: Vec<Line> = rules.iter().map(|r| {
+        Line::from(vec![
+            Span::styled(format!(" [{}:{}] ", r.rule_type.as_str(), r.value), Style::default().fg(theme.accent)),
+            Span::styled(format!("rule #{}", r.id), Style::default().fg(theme.muted)),
+        ])
+    }).collect();
+
+    let lines = if lines.is_empty() {
+        vec![Line::from(Span::styled(" (no rules)", Style::default().fg(theme.muted)))]
+    } else { lines };
+
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+    f.render_widget(Clear, overlay_area);
+    let title = " Alert Rules (Enter:remove Esc:close) ";
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(title, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
     let visible_h = inner.height as usize;
     let total = lines.len();
     let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));

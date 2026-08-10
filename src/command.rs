@@ -270,6 +270,16 @@ pub fn builtin_commands() -> Vec<Command> {
             "Browse saved snippets overlay (S) — select and run",
             show_snippet_library,
         ),
+        Command::new(
+            "add alert rule",
+            "Create an alert rule (enters input mode: rule:add type:value)",
+            add_alert_rule_input,
+        ),
+        Command::new(
+            "alert rules",
+            "View and manage alert rules overlay (N)",
+            show_alert_rules,
+        ),
     ]
 }
 
@@ -516,6 +526,19 @@ fn run_snippet(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.insert_mode = true;
     shell.focus = crate::shell::FocusTarget::Input;
     shell.input_buf = "run:".to_string();
+    vec![]
+}
+
+fn add_alert_rule_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "rule:add ".to_string();
+    vec![]
+}
+
+fn show_alert_rules(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.rule_overlay_active = true;
+    shell.overlay_scroll = 0;
     vec![]
 }
 

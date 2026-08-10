@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 6;
+const DB_VERSION: i64 = 7;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -190,7 +190,14 @@ impl Db {
                 created_at INTEGER NOT NULL
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '6');
+            CREATE TABLE IF NOT EXISTS alert_rules (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_type  TEXT NOT NULL,
+                value      TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '7');
             ",
         )
         .ok()?;
@@ -742,6 +749,43 @@ impl Db {
             });
         map
     }
+
+    // ──── Alert rules ────
+
+    /// 添加告警规则, 返回分配的 id。
+    pub fn upsert_alert_rule(&self, rule_type: &str, value: &str) -> i64 {
+        let conn = match self.conn.lock() { Ok(c) => c, Err(_) => return 0 };
+        let ts = crate::model::now_ms();
+        let _ = conn.execute(
+            "INSERT INTO alert_rules (rule_type, value, created_at) VALUES (?1, ?2, ?3)",
+            params![rule_type, value, ts],
+        );
+        conn.last_insert_rowid()
+    }
+
+    /// 按 id 移除告警规则。
+    pub fn remove_alert_rule(&self, id: i64) {
+        let conn = match self.conn.lock() { Ok(c) => c, Err(_) => return };
+        let _ = conn.execute("DELETE FROM alert_rules WHERE id = ?1", params![id]);
+    }
+
+    /// 加载所有告警规则。
+    pub fn load_alert_rules(&self) -> Vec<crate::model::AlertRule> {
+        use crate::model::{AlertRule, AlertRuleType};
+        let conn = match self.conn.lock() { Ok(c) => c, Err(_) => return vec![] };
+        let mut stmt = match conn.prepare("SELECT id, rule_type, value, created_at FROM alert_rules ORDER BY created_at") {
+            Ok(s) => s, Err(_) => return vec![],
+        };
+        let rows = stmt.query_map([], |r| {
+            Ok(AlertRule {
+                id: r.get(0)?,
+                rule_type: AlertRuleType::from_str(&r.get::<_, String>(1)?).unwrap_or(AlertRuleType::Message),
+                value: r.get(2)?,
+                created_at_ms: r.get(3)?,
+            })
+        });
+        rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
+    }
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -788,7 +832,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("6".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("7".to_string()));
     }
 
     #[test]
