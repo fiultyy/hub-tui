@@ -323,6 +323,51 @@ impl Service {
                         db.remove_note(&handle);
                     }
                 }
+                crate::update::Cmd::ExportSettings { path, bundle } => {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        let json = match serde_json::to_string_pretty(&bundle) {
+                            Ok(j) => j,
+                            Err(e) => { let _ = tx.send(AppMsg::ExportFailed { reason: e.to_string() }); return; }
+                        };
+                        let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
+                            + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
+                            + bundle.alert_rules.len() + bundle.notes.len();
+                        match std::fs::write(&path, json) {
+                            Ok(_) => { let _ = tx.send(AppMsg::ExportOk { path, count }); }
+                            Err(e) => { let _ = tx.send(AppMsg::ExportFailed { reason: e.to_string() }); }
+                        }
+                    });
+                }
+                crate::update::Cmd::ImportSettings { path } => {
+                    let tx = self.tx.clone();
+                    let db = self.db.clone();
+                    thread::spawn(move || {
+                        let data = match std::fs::read_to_string(&path) {
+                            Ok(d) => d,
+                            Err(e) => { let _ = tx.send(AppMsg::ImportFailed { reason: e.to_string() }); return; }
+                        };
+                        let bundle: crate::model::ExportBundle = match serde_json::from_str(&data) {
+                            Ok(b) => b,
+                            Err(e) => { let _ = tx.send(AppMsg::ImportFailed { reason: e.to_string() }); return; }
+                        };
+                        // Clear + re-insert to DB
+                        if let Some(db) = &db {
+                            db.clear_user_data();
+                            for (k, v) in &bundle.config { db.set_config(k, v); }
+                            for (h, tags) in &bundle.tags { for t in tags { db.upsert_tag(h, t); } }
+                            for (n, t) in &bundle.snippets { db.upsert_snippet(n, t); }
+                            for m in &bundle.macros { db.upsert_macro(&m.name, &m.key_events_json); }
+                            for (n, snap) in &bundle.saved_views {
+                                if let Ok(json) = serde_json::to_string(snap) { db.upsert_saved_view(n, &json); }
+                            }
+                            for h in &bundle.pinned { db.upsert_pinned(h); }
+                            for r in &bundle.alert_rules { db.upsert_alert_rule(r.rule_type.as_str(), &r.value); }
+                            for (h, note) in &bundle.notes { db.upsert_note(h, note); }
+                        }
+                        let _ = tx.send(AppMsg::ImportOk { path, bundle });
+                    });
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }

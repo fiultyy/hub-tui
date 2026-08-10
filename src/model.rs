@@ -1296,7 +1296,7 @@ pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
 pub const ALERT_RULES_CAP: usize = 20;
 
 /// 告警规则类型。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AlertRuleType {
     State,
     Source,
@@ -1326,7 +1326,7 @@ impl AlertRuleType {
 }
 
 /// 一条告警规则。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AlertRule {
     pub id: i64,
     pub rule_type: AlertRuleType,
@@ -1493,7 +1493,7 @@ pub fn deserialize_key_events(json: &str) -> Vec<crossterm::event::KeyEvent> {
 }
 
 /// 一条录制的宏: 命名 + KeyEvent 序列(JSON)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecordedMacro {
     pub name: String,
     pub key_events_json: String,
@@ -1694,4 +1694,19 @@ pub fn apply_focus_filter(
         return sorted;
     }
     sorted.into_iter().filter(|h| selected.contains(h)).collect()
+}
+
+// ───────────────────────── Export/Import(导出导入) ─────────────────────────
+
+/// 用户数据导出包(JSON 序列化)。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExportBundle {
+    pub config: HashMap<String, String>,
+    pub tags: HashMap<String, HashSet<String>>,
+    pub snippets: HashMap<String, String>,
+    pub macros: Vec<RecordedMacro>,
+    pub saved_views: Vec<(String, ViewSnapshot)>,
+    pub pinned: Vec<String>,
+    pub alert_rules: Vec<AlertRule>,
+    pub notes: HashMap<String, String>,
 }

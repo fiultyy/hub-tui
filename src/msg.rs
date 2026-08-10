@@ -85,6 +85,14 @@ pub enum AppMsg {
     ConfigUpdated { key: String, value: String },
     /// 编排快照回灌(run-list + task-list + gate-list 三合一)。
     OrchSnapshotLoaded(Box<crate::model::OrchSnapshot>),
+    /// 导出成功。
+    ExportOk { path: String, count: usize },
+    /// 导出失败。
+    ExportFailed { reason: String },
+    /// 导入成功(返回反序列化的 bundle)。
+    ImportOk { path: String, bundle: crate::model::ExportBundle },
+    /// 导入失败。
+    ImportFailed { reason: String },
     /// 通用错误。
     Error(String),
 }

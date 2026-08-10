@@ -100,7 +100,10 @@ pub enum Cmd {
     PersistNote { handle: String, text: String },
     /// 移除 agent 笔记。
     RemoveNote { handle: String },
-    /// 无操作。
+    /// 导出用户数据到 JSON 文件。
+    ExportSettings { path: String, bundle: crate::model::ExportBundle },
+    /// 从 JSON 文件导入用户数据。
+    ImportSettings { path: String },
     Noop,
     /// 退出。
     Quit,
@@ -374,6 +377,37 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
         // ──── 编排快照回灌 ────
         AppMsg::OrchSnapshotLoaded(snapshot) => {
             model.apply_orch_snapshot(*snapshot);
+            vec![]
+        }
+
+        // ──── 导出/导入结果回灌 ────
+        AppMsg::ExportOk { path, count } => {
+            shell.push_toast(format!("✓ exported {count} items to {path}"));
+            vec![]
+        }
+        AppMsg::ExportFailed { reason } => {
+            shell.push_toast(format!("✖ export failed: {reason}"));
+            vec![]
+        }
+        AppMsg::ImportOk { path, bundle } => {
+            // Apply bundle to model (replace-all)
+            model.apply_config(bundle.config.clone());
+            model.apply_tags(bundle.tags.clone());
+            model.apply_snippets(bundle.snippets.clone());
+            model.apply_macros(bundle.macros.clone());
+            model.apply_saved_views(bundle.saved_views.clone());
+            model.apply_pinned(bundle.pinned.clone());
+            model.alert_rules = bundle.alert_rules.clone();
+            model.apply_notes(bundle.notes.clone());
+            model.generation += 1;
+            let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
+                + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
+                + bundle.alert_rules.len() + bundle.notes.len();
+            shell.push_toast(format!("✓ imported {count} items from {path}"));
+            vec![]
+        }
+        AppMsg::ImportFailed { reason } => {
+            shell.push_toast(format!("✖ import failed: {reason}"));
             vec![]
         }
 
@@ -1329,6 +1363,39 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         }
         shell.push_toast("note: usage: note:<handle> <text> | note:rm:<handle>".into());
         return vec![];
+    }
+
+    // export:<path> / import:<path>
+    if let Some(rest) = buf.strip_prefix("export:") {
+        let path = rest.trim().to_string();
+        if path.is_empty() {
+            shell.push_toast("export: usage: export:<path>".into());
+            return vec![];
+        }
+        let bundle = crate::model::ExportBundle {
+            config: model.config.clone(),
+            tags: model.tags.clone(),
+            snippets: model.snippets.clone(),
+            macros: model.macros.values().cloned().collect(),
+            saved_views: model.saved_views.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            pinned: model.pinned.iter().cloned().collect(),
+            alert_rules: model.alert_rules.clone(),
+            notes: model.notes.clone(),
+        };
+        let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
+            + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
+            + bundle.alert_rules.len() + bundle.notes.len();
+        shell.push_toast(format!("exporting {count} items to {path}…"));
+        return vec![Cmd::ExportSettings { path, bundle }];
+    }
+    if let Some(rest) = buf.strip_prefix("import:") {
+        let path = rest.trim().to_string();
+        if path.is_empty() {
+            shell.push_toast("import: usage: import:<path>".into());
+            return vec![];
+        }
+        shell.push_toast(format!("importing from {path}…"));
+        return vec![Cmd::ImportSettings { path }];
     }
 
     vec![]
