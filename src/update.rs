@@ -324,9 +324,11 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
 #[must_use]
 fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String]> {
     match shell.tab {
-        Tab::Directory => std::borrow::Cow::Owned(
-            model.directory.keys().cloned().collect::<Vec<_>>(),
-        ),
+        Tab::Directory => {
+            let mut keys: Vec<String> = model.directory.keys().cloned().collect();
+            keys.sort();
+            std::borrow::Cow::Owned(keys)
+        }
         Tab::Groups => std::borrow::Cow::Owned(
             model.groups.keys().cloned().collect::<Vec<_>>(),
         ),
@@ -339,7 +341,11 @@ fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String
 /// 当前选中 agent 的 handle(用于发送)。
 fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
     let keys: Vec<String> = match shell.tab {
-        Tab::Directory => model.directory.keys().cloned().collect(),
+        Tab::Directory => {
+            let mut keys: Vec<String> = model.directory.keys().cloned().collect();
+            keys.sort();
+            keys
+        }
         _ => return None,
     };
     keys.get(shell.cursor).cloned()
