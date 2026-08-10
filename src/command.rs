@@ -235,6 +235,11 @@ pub fn builtin_commands() -> Vec<Command> {
             "Copy selected agent handle to clipboard (press y in Directory)",
             yank_handle,
         ),
+        Command::new(
+            "activity log",
+            "Open the Activity Log overlay (recent events across all agents)",
+            show_activity,
+        ),
     ]
 }
 
@@ -448,6 +453,12 @@ fn read_output(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 fn show_worktree_ps(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.worktree_ps_active = true;
     vec![Cmd::RefreshWorktreePs]
+}
+
+fn show_activity(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.activity_active = true;
+    shell.overlay_scroll = 0;
+    vec![]
 }
 
 fn new_terminal(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {

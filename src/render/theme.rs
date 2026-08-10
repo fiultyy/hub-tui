@@ -21,6 +21,8 @@ pub struct Theme {
     pub idle: Color,
     /// 错误状态(红色)。
     pub error: Color,
+    /// 警告色(活动日志 Warn 严重级)。
+    pub warn: Color,
     /// 边框色。
     pub border: Color,
     /// 聚焦边框色。
@@ -61,6 +63,7 @@ impl Theme {
             bg: Color::Rgb(30, 30, 46),
             accent: Color::Rgb(137, 180, 250),
             muted: Color::Rgb(147, 153, 178),
+            warn: Color::Rgb(249, 226, 175),
             working: Color::Rgb(166, 227, 161),
             idle: Color::Rgb(147, 153, 178),
             error: Color::Rgb(243, 139, 168),
@@ -82,6 +85,7 @@ impl Theme {
             accent: Color::Rgb(0, 123, 167),
             muted: Color::Rgb(146, 131, 116),
             working: Color::Rgb(46, 125, 50),
+            warn: Color::Rgb(180, 130, 20),
             idle: Color::Rgb(146, 131, 116),
             error: Color::Rgb(198, 40, 40),
             border: Color::Rgb(189, 174, 147),
@@ -101,6 +105,7 @@ impl Theme {
             bg: Color::Rgb(0, 0, 0),
             accent: Color::Rgb(0, 255, 255),
             muted: Color::Rgb(160, 160, 160),
+            warn: Color::Rgb(255, 255, 0),
             working: Color::Rgb(0, 255, 0),
             idle: Color::Rgb(128, 128, 128),
             error: Color::Rgb(255, 0, 0),

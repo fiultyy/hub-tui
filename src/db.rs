@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 1;
+const DB_VERSION: i64 = 2;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -157,7 +157,17 @@ impl Db {
                 PRIMARY KEY (handle, snapshot_at)
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '1');
+            CREATE TABLE IF NOT EXISTS events (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts       INTEGER NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'Info',
+                category TEXT NOT NULL DEFAULT 'Agent',
+                source   TEXT NOT NULL DEFAULT 'system',
+                text     TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '2');
             ",
         )
         .ok()?;
@@ -455,6 +465,61 @@ impl Db {
         .unwrap_or_default()
     }
 
+    // ──── Activity Log events ────
+
+    /// 插入活动日志事件, 返回分配的 id。FIFO 截断到 5000 行。
+    pub fn insert_event(&self, event: &crate::model::Event) -> i64 {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+        let _ = conn.execute(
+            "INSERT INTO events (ts, severity, category, source, text) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                event.timestamp_ms,
+                event.severity.as_str(),
+                event.category.as_str(),
+                event.source,
+                event.text,
+            ],
+        );
+        // FIFO trim (cap 5000)
+        let _ = conn.execute(
+            "DELETE FROM events WHERE id IN (
+                SELECT id FROM events ORDER BY id DESC LIMIT -1 OFFSET 5000
+            )",
+            [],
+        );
+        conn.last_insert_rowid()
+    }
+
+    /// 加载最近 N 条事件(时间升序, 最旧在前 — 便于 push_back 入队)。
+    pub fn load_recent_events(&self, limit: usize) -> Vec<crate::model::Event> {
+        use crate::model::{Event, EventCategory, EventSeverity};
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT id, ts, severity, category, source, text
+             FROM events ORDER BY ts ASC LIMIT ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(Event {
+                id: r.get(0)?,
+                timestamp_ms: r.get(1)?,
+                severity: EventSeverity::from_str(&r.get::<_, String>(2)?),
+                category: EventCategory::from_str(&r.get::<_, String>(3)?),
+                source: r.get(4)?,
+                text: r.get(5)?,
+            })
+        });
+        rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
+    }
+
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -501,7 +566,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("1".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("2".to_string()));
     }
 
     #[test]

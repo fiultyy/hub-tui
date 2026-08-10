@@ -8,7 +8,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::msg::AppMsg;
-use crate::model::{directory_sorted_with_mode, SortMode, Agent, OrchMessage, Model};
+use crate::model::{directory_sorted_with_mode, SortMode, Agent, OrchMessage, Model, EventCategory, EventSeverity, StatusCategory};
 use crate::shell::{FocusTarget, Shell, Tab};
 use crate::view::{directory_layout, directory_scroll, LayoutItem};
 
@@ -68,6 +68,8 @@ pub enum Cmd {
     MarkRead { delivery_id: String },
     /// spawn: 并行刷新 run-list + task-list + gate-list 编排快照。
     RefreshOrchTasks,
+    /// 持久化活动日志事件到 SQLite(service 同步写)。
+    PersistActivityEvent(crate::model::Event),
     /// 无操作。
     Noop,
     /// 退出。
@@ -82,6 +84,20 @@ fn should_refresh_agents(model: &Model, shell: &Shell) -> bool {
     // 转换为 tick 数: tick=50ms → ticks = interval_ms / 50
     let ticks = (interval_ms / 50).max(2) as usize; // 最少 100ms
     shell.spinner_frame % ticks == 0
+}
+
+/// 记录活动日志事件: 推入 model.events + 返回 PersistActivityEvent Cmd。
+fn note_event(model: &mut Model, sev: EventSeverity, cat: EventCategory, source: &str, text: String) -> Cmd {
+    let ev = crate::model::Event {
+        id: 0,
+        timestamp_ms: crate::model::now_ms(),
+        severity: sev,
+        category: cat,
+        source: source.to_string(),
+        text,
+    };
+    model.push_event(ev.clone());
+    Cmd::PersistActivityEvent(ev)
 }
 
 // ───────────────────────── update(纯 reducer) ─────────────────────────
@@ -125,15 +141,51 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
         // ──── terminal list 加载完成 ────
         AppMsg::AgentsLoaded(agents) => {
+            let old_handles: std::collections::HashSet<String> = model.directory.keys().cloned().collect();
             let persist = agents.clone();
             model.apply_agents(agents);
-            vec![Cmd::PersistAgents(persist), Cmd::WriteDirectory]
+            let new_handles: std::collections::HashSet<String> = model.directory.keys().cloned().collect();
+            let mut cmds = vec![Cmd::PersistAgents(persist), Cmd::WriteDirectory];
+            // 抑制空集风暴(瞬态 Orca 不稳定时全量消失/出现)
+            if !old_handles.is_empty() && !new_handles.is_empty() {
+                for h in new_handles.difference(&old_handles) {
+                    cmds.push(note_event(model, EventSeverity::Info, EventCategory::Agent, h, format!("Agent appeared: {h}")));
+                }
+                for h in old_handles.difference(&new_handles) {
+                    cmds.push(note_event(model, EventSeverity::Info, EventCategory::Agent, h, format!("Agent disappeared: {h}")));
+                }
+            }
+            cmds
         }
 
-        // ──── last-status.json 刷新结果 ────
         AppMsg::StatusUpdated(statuses) => {
+            // 快照旧 StatusCategory(变更前)
+            let old_cats: std::collections::HashMap<String, StatusCategory> = model.directory.iter()
+                .map(|(h, a)| (h.clone(), StatusCategory::from_agent(a)))
+                .collect();
             model.apply_status(statuses);
-            vec![Cmd::WriteDirectory]
+            let mut cmds = vec![Cmd::WriteDirectory];
+            // 收集状态转移(borrow-checker 安全: 先收集再 emit)
+            let transitions: Vec<(String, EventSeverity, String)> = model.directory.iter()
+                .filter_map(|(handle, agent)| {
+                    let new_cat = StatusCategory::from_agent(agent);
+                    old_cats.get(handle).and_then(|old_cat| {
+                        if old_cat != &new_cat {
+                            let sev = match new_cat {
+                                StatusCategory::Error | StatusCategory::Blocked => EventSeverity::Warn,
+                                _ => EventSeverity::Info,
+                            };
+                            Some((handle.clone(), sev, format!("{}: {} → {}", handle, old_cat.label(), new_cat.label())))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            for (handle, sev, text) in transitions {
+                cmds.push(note_event(model, sev, EventCategory::State, &handle, text));
+            }
+            cmds
         }
 
         // ──── inbox 未读数刷新 ────
@@ -145,48 +197,52 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
         // ──── 编排发送成功(ADR-7 回灌) ────
         AppMsg::SendOk(id) => {
             shell.push_toast(format!("Sent: {id}"));
-            vec![]
+            vec![note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Sent: {id}"))]
         }
 
         // ──── 编排发送失败(ADR-7 回灌) ────
         AppMsg::SendFailed(e) => {
             shell.push_toast(format!("Send failed: {e}"));
-            vec![]
+            vec![note_event(model, EventSeverity::Error, EventCategory::Message, "system", format!("Send failed: {e}"))]
         }
 
         // ──── mark-read 成功(ADR-7 回灌) ────
         AppMsg::AckOk(id) => {
             shell.push_toast(format!("Marked read: {id}"));
             // 刷新未读数
-            vec![Cmd::RefreshUnread]
+            vec![Cmd::RefreshUnread, note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Marked read: {id}"))]
         }
 
         // ──── mark-read 失败 ────
         AppMsg::AckFailed(e) => {
             shell.push_toast(format!("Ack failed: {e}"));
-            vec![]
+            vec![note_event(model, EventSeverity::Error, EventCategory::Message, "system", format!("Ack failed: {e}"))]
         }
 
         AppMsg::MessagesDrained(msgs) => {
+            let n = msgs.len();
             let persist = msgs.clone();
             for msg in msgs {
                 model.push_message(msg);
             }
-            vec![Cmd::PersistMessages(persist)]
+            let mut cmds = vec![Cmd::PersistMessages(persist)];
+            if n > 0 {
+                cmds.push(note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Received {n} messages")));
+            }
+            cmds
         }
 
         AppMsg::SocketQuery(req) => {
             vec![Cmd::QuerySocket { req }]
         }
-
         // ──── PTY 注入结果 ────
         AppMsg::InjectOk(n) => {
             shell.push_toast(format!("PTY: sent {n} bytes"));
-            vec![]
+            vec![note_event(model, EventSeverity::Info, EventCategory::System, "system", format!("PTY inject: {n} bytes"))]
         }
         AppMsg::InjectFailed(e) => {
             shell.push_toast(format!("PTY failed: {e}"));
-            vec![]
+            vec![note_event(model, EventSeverity::Error, EventCategory::System, "system", format!("PTY failed: {e}"))]
         }
 
         // ──── terminal read 结果(浮层显示) ────
@@ -204,15 +260,18 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
         // ──── terminal create 成功 ────
         AppMsg::TerminalCreated { handle, title } => {
-            let label = title.as_deref().unwrap_or(&handle);
+            let label = title.as_deref().unwrap_or(&handle).to_string();
             shell.push_toast(format!("Created: {label}"));
-            // 刷新通信录,让新终端出现在 Directory
-            vec![Cmd::RefreshAgents, Cmd::WriteDirectory]
+            vec![
+                Cmd::RefreshAgents,
+                Cmd::WriteDirectory,
+                note_event(model, EventSeverity::Info, EventCategory::Agent, &handle, format!("Created: {label}")),
+            ]
         }
         // ──── 群组操作成功 ────
         AppMsg::GroupActionOk(msg) => {
-            shell.push_toast(msg);
-            vec![Cmd::RefreshAgents]
+            shell.push_toast(msg.clone());
+            vec![Cmd::RefreshAgents, note_event(model, EventSeverity::Info, EventCategory::Group, "system", msg)]
         }
 
         // ──── 信息 toast ────
@@ -223,8 +282,8 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
         // ──── 通用错误 ────
         AppMsg::Error(e) => {
-            shell.push_toast(e);
-            vec![]
+            shell.push_toast(e.clone());
+            vec![note_event(model, EventSeverity::Error, EventCategory::System, "system", e)]
         }
 
         // ──── 配置更新回灌 ────
@@ -261,7 +320,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -301,6 +360,15 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('?'), KeyModifiers::NONE) if !shell.insert_mode => {
             shell.cheatsheet_active = true;
             shell.overlay_scroll = 0;
+            return vec![];
+        }
+
+        // a: activity log overlay (toggle)
+        (KeyCode::Char('a'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.activity_active = !shell.activity_active;
+            if shell.activity_active {
+                shell.overlay_scroll = 0;
+            }
             return vec![];
         }
 
@@ -867,7 +935,7 @@ fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
 // ───────────────────────── 浮层键盘处理 ─────────────────────────
 
 /// 浮层键盘: j/k 滚动, Esc/q 关闭。
-fn handle_overlay_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     match (k.code, k.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
             shell.overlay_content = None;
@@ -877,6 +945,13 @@ fn handle_overlay_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec
             shell.cheatsheet_active = false;
             shell.config_overlay_active = false;
             shell.orch_tasks_active = false;
+            shell.activity_active = false;
+            vec![]
+        }
+        (KeyCode::Char('c'), KeyModifiers::NONE) => {
+            if shell.activity_active {
+                model.clear_events();
+            }
             vec![]
         }
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
@@ -1139,7 +1214,7 @@ mod tests {
             &mut shell,
             AppMsg::SendOk("msg-123".to_string()),
         );
-        assert!(cmds.is_empty());
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistActivityEvent(_))));
         assert_eq!(shell.toasts.len(), 1);
         assert!(shell.toasts[0].0.contains("msg-123"));
     }
@@ -1201,7 +1276,7 @@ mod tests {
             &mut shell,
             AppMsg::Error("boom".to_string()),
         );
-        assert!(cmds.is_empty());
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistActivityEvent(_))));
         assert_eq!(shell.toasts.len(), 1);
     }
 
@@ -1279,7 +1354,7 @@ mod tests {
         let mut model = Model::new();
         let mut shell = Shell::new();
         let cmds = update(&mut model, &mut shell, AppMsg::AckFailed("err".to_string()));
-        assert!(cmds.is_empty());
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistActivityEvent(_))));
         assert_eq!(shell.toasts.len(), 1);
     }
 
@@ -1405,5 +1480,40 @@ mod tests {
         ]);
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('1'))));
         assert!(shell.toasts.iter().any(|t| t.0.contains("/opt/project")));
+    }
+
+    #[test]
+    fn activity_log_note_event() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        let cmds = update(&mut model, &mut shell, AppMsg::Error("boom".to_string()));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistActivityEvent(_))));
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].severity, EventSeverity::Error);
+    }
+
+    #[test]
+    fn activity_log_status_transition() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        // seed an agent in Working state
+        let agent = crate::model::Agent {
+            handle: "h1".to_string(),
+            pty_id: None, cwd: "/tmp".to_string(), worktree_id: String::new(),
+            branch: String::new(), tab_id: String::new(), leaf_id: String::new(),
+            pane_key: String::new(), title: None, connected: true, writable: true,
+            source: Some("claude".to_string()), state: Some("working".to_string()),
+            prompt: None, tool_name: None, tool_input: None, last_assistant_msg: None,
+            preview: None, last_output_at: None,
+        };
+        model.directory.insert("h1".to_string(), agent);
+        // transition to error
+        let status = crate::msg::AgentStatus {
+            pane_key: String::new(), source: "claude".to_string(), state: "error".to_string(),
+            worktree_id: String::new(),
+            prompt: None, tool_name: None, tool_input: None, last_assistant_msg: None,
+        };
+        let cmds = update(&mut model, &mut shell, AppMsg::StatusUpdated(vec![status]));
+        assert!(cmds.iter().any(|c| matches!(&c, Cmd::PersistActivityEvent(e) if e.category == EventCategory::State)));
     }
 }

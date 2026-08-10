@@ -147,6 +147,112 @@ impl StatusCategory {
     }
 }
 
+// ───────────────────────── 活动日志(Activity Log)─────────────────────────
+
+/// 事件严重级别。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventSeverity {
+    Info,
+    Warn,
+    Error,
+}
+
+impl EventSeverity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Info => "Info",
+            Self::Warn => "Warn",
+            Self::Error => "Error",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "warn" => Self::Warn,
+            "error" => Self::Error,
+            _ => Self::Info,
+        }
+    }
+
+    /// 单字宽图标。
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Error => "✖",
+            Self::Warn => "⚠",
+            Self::Info => "·",
+        }
+    }
+}
+
+/// 事件类别(用于过滤/着色)。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventCategory {
+    /// agent 生命周期: 出现/消失/创建。
+    Agent,
+    /// StatusCategory 状态转移。
+    State,
+    /// 消息: send/ack/receive。
+    Message,
+    /// 群组操作。
+    Group,
+    /// 系统: PTY/通用错误。
+    System,
+}
+
+impl EventCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Agent => "Agent",
+            Self::State => "State",
+            Self::Message => "Message",
+            Self::Group => "Group",
+            Self::System => "System",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "state" => Self::State,
+            "message" => Self::Message,
+            "group" => Self::Group,
+            "system" => Self::System,
+            _ => Self::Agent,
+        }
+    }
+
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Agent => "👤",
+            Self::State => "↻",
+            Self::Message => "✉",
+            Self::Group => "👥",
+            Self::System => "⚙",
+        }
+    }
+}
+
+/// 活动日志事件。纯数据, 无 IO。
+#[derive(Clone, Debug)]
+pub struct Event {
+    /// DB 自增 id; 0 = 未持久化。
+    pub id: i64,
+    /// epoch 毫秒。
+    pub timestamp_ms: i64,
+    pub severity: EventSeverity,
+    pub category: EventCategory,
+    /// agent handle 或 "system"。
+    pub source: String,
+    pub text: String,
+}
+
+/// 当前 epoch 毫秒(SystemTime, 无 IO 语义)。
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// 编排消息(对齐 orca orchestration inbox --json)。
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct OrchMessage {
@@ -179,6 +285,8 @@ fn default_msg_type() -> String {
 
 /// inbox 消息上限。
 pub const MESSAGES_CAP: usize = 5000;
+/// 活动日志事件上限(内存; DB 保留更多)。
+pub const EVENTS_CAP: usize = 2000;
 
 /// last-status.json join 数据(通过 worktreeId join 到 Agent)。
 /// 用于 pending_status 缓存 + apply_status 合并。
@@ -200,7 +308,9 @@ pub struct Model {
     pub groups: HashMap<String, HashSet<String>>,
     /// inbox 消息队列(cap 5000)
     pub messages: VecDeque<OrchMessage>,
-    /// 异步 generation guard(范式 3: 防陈旧回调)
+    /// 活动日志事件队列(cap EVENTS_CAP, 最新在尾部)。
+    pub events: VecDeque<Event>,
+    /// 异步 generation guard(范式 3: 防陈旧回调)。
     pub generation: u64,
     /// pending status 缓存: AgentsLoaded 和 StatusUpdated 是异步的,
     /// 可能 StatusUpdated 先到但 directory 为空。缓存到这,AgentsLoaded 时合并。
@@ -219,6 +329,7 @@ impl Model {
             directory: HashMap::new(),
             groups: HashMap::new(),
             messages: VecDeque::new(),
+            events: VecDeque::new(),
             generation: 0,
             pending_status: HashMap::new(),
             unread_counts: HashMap::new(),
@@ -313,6 +424,35 @@ impl Model {
             self.messages.pop_front();
         }
         self.messages.push_back(msg);
+    }
+
+    /// 追加活动日志事件, cap EVENTS_CAP, 溢出弹头。timestamp_ms=0 时自动填 now_ms。
+    pub fn push_event(&mut self, mut event: Event) {
+        if self.events.len() >= EVENTS_CAP {
+            self.events.pop_front();
+        }
+        if event.timestamp_ms == 0 {
+            event.timestamp_ms = now_ms();
+        }
+        self.events.push_back(event);
+        self.generation += 1;
+    }
+
+    /// 启动时从 DB 批量加载历史事件(替换队列, 截断到 EVENTS_CAP)。
+    pub fn apply_events(&mut self, events: Vec<Event>) {
+        let mut q: VecDeque<Event> = events.into_iter().collect();
+        if q.len() > EVENTS_CAP {
+            let drop_n = q.len() - EVENTS_CAP;
+            q.drain(..drop_n);
+        }
+        self.events = q;
+        self.generation += 1;
+    }
+
+    /// 清空活动日志(overlay `c` 键)。
+    pub fn clear_events(&mut self) {
+        self.events.clear();
+        self.generation += 1;
     }
 
     /// 更新未读消息计数(来自 orchestration inbox)。

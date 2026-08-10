@@ -241,6 +241,11 @@ impl Service {
                 crate::update::Cmd::PersistMessages(msgs) => {
                     self.persist_messages(&msgs);
                 }
+                crate::update::Cmd::PersistActivityEvent(ev) => {
+                    if let Some(db) = &self.db {
+                        db.insert_event(&ev);
+                    }
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }

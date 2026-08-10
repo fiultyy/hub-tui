@@ -95,6 +95,8 @@ pub struct Shell {
     pub worktree_ps_active: bool,
     /// config overlay 激活(show config 浮层)。
     pub config_overlay_active: bool,
+    /// 活动日志浮层激活(a 键)。
+    pub activity_active: bool,
     /// 多选的 handle 集合(Space 键 toggle)。
     pub selected_set: std::collections::HashSet<String>,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
@@ -124,6 +126,7 @@ impl Shell {
             overlay_scroll: 0,
             group_detail_active: false,
             cheatsheet_active: false,
+            activity_active: false,
             orch_tasks_active: false,
             worktree_ps_active: false,
             config_overlay_active: false,

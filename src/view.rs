@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::model::{directory_sorted_with_mode, Model, StatusCategory};
+use crate::model::{directory_sorted_with_mode, EventCategory, EventSeverity, Model, StatusCategory};
 use crate::render::blocks;
 use crate::render::theme::Theme;
 use crate::shell::{ConnState, Shell, Tab};
@@ -99,6 +99,11 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     // 编排任务浮层(t 键激活)
     if shell.orch_tasks_active {
         draw_orch_tasks_overlay(f, model, shell, area, &theme);
+    }
+
+    // 活动日志浮层(a 键激活)
+    if shell.activity_active {
+        draw_activity_overlay(f, model, shell, area, &theme);
     }
 }
 
@@ -963,8 +968,10 @@ fn status_hint(shell: &Shell) -> String {
         || shell.worktree_ps_active
         || shell.group_detail_active
         || shell.config_overlay_active
+        || shell.orch_tasks_active
+        || shell.activity_active
     {
-        return " Esc/q:close j/k:scroll ".to_string();
+        return " Esc/q:close j/k:scroll c:clear ".to_string();
     }
     if shell.palette_active {
         return " Esc:close Enter:exec j/k:nav ".to_string();
@@ -1520,6 +1527,73 @@ fn status_color(status: &str, theme: &Theme) -> Color {
         s if s.contains("block") || s.contains("fail") => theme.error,
         _ => theme.muted,
     }
+}
+
+/// epoch 毫秒 → HH:MM:SS (UTC)。
+fn format_hms(ts_ms: i64) -> String {
+    let secs = (ts_ms / 1000).max(0) as u64;
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+/// 活动日志浮层: 最新事件在前, severity 着色, 可滚动。
+fn draw_activity_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+
+    // 构建行(最新在前)
+    let lines: Vec<Line> = model.events.iter().rev().map(|e| {
+        let ts = format_hms(e.timestamp_ms);
+        let sev_color = match e.severity {
+            EventSeverity::Error => theme.error,
+            EventSeverity::Warn => theme.warn,
+            EventSeverity::Info => theme.muted,
+        };
+        let src: String = if e.source.len() > 16 {
+            format!("{}…", &e.source[..16])
+        } else {
+            e.source.clone()
+        };
+        Line::from(vec![
+            Span::styled(format!(" {ts} "), Style::default().fg(theme.muted)),
+            Span::styled(format!("{} ", e.severity.icon()), Style::default().fg(sev_color)),
+            Span::styled(format!("{} ", e.category.icon()), Style::default().fg(theme.accent)),
+            Span::styled(format!("{src:<16} "), Style::default().fg(theme.muted)),
+            Span::styled(e.text.clone(), Style::default().fg(theme.fg)),
+        ])
+    }).collect();
+
+    let lines = if lines.is_empty() {
+        vec![Line::from(Span::styled(" (no events)", Style::default().fg(theme.muted)))]
+    } else {
+        lines
+    };
+
+    // 尺寸 + 居中(同 worktree_ps_overlay)
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Activity Log (j/k:scroll c:clear Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(title, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    // 滚动裁剪
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    let visible: Vec<Line> = lines[start..end].to_vec();
+    f.render_widget(Paragraph::new(visible), inner);
 }
 
 #[cfg(test)]
