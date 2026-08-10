@@ -294,14 +294,38 @@ impl Model {
     }
 }
 
-/// Directory 排序: 按 (状态分类 rank, handle) 排序。
+/// Directory 排序: 按 worktreePath 分组, 组间按最近活跃(max lastOutputAt)降序,
+/// 组内按 lastOutputAt 降序 + handle 升序。最近活跃的组排最前。
 /// 所有 cursor/导航/hit_test 逻辑共享此排序, 保证分区一致性。
 pub fn directory_sorted_handles(directory: &HashMap<String, Agent>) -> Vec<String> {
-    let mut entries: Vec<(&String, &Agent)> = directory.iter().collect();
-    entries.sort_by(|a, b| {
-        let ca = StatusCategory::from_agent(a.1);
-        let cb = StatusCategory::from_agent(b.1);
-        ca.cmp(&cb).then_with(|| a.0.cmp(b.0))
+    // 按 worktreePath(agent.cwd)分组
+    let mut groups: HashMap<&str, Vec<&Agent>> = HashMap::new();
+    for a in directory.values() {
+        groups.entry(a.cwd.as_str()).or_default().push(a);
+    }
+    // 组活跃度 = 组内 max(lastOutputAt); None 视为 0
+    let group_activity = |agents: &[&Agent]| -> i64 {
+        agents.iter().filter_map(|a| a.last_output_at).max().unwrap_or(0)
+    };
+    let mut group_list: Vec<(&str, Vec<&Agent>)> = groups.into_iter().collect();
+    // 组间: 最近活跃优先(降序), cwd 字符串升序兜底(确定性, 防 HashMap 乱序)
+    group_list.sort_by(|a, b| {
+        group_activity(&b.1)
+            .cmp(&group_activity(&a.1))
+            .then_with(|| a.0.cmp(b.0))
     });
-    entries.into_iter().map(|(h, _)| h.clone()).collect()
+    // 组内: lastOutputAt 降序, handle 升序兜底(稳定)
+    for (_, agents) in group_list.iter_mut() {
+        agents.sort_by(|a, b| {
+            b.last_output_at
+                .unwrap_or(0)
+                .cmp(&a.last_output_at.unwrap_or(0))
+                .then_with(|| a.handle.cmp(&b.handle))
+        });
+    }
+    group_list
+        .into_iter()
+        .flat_map(|(_, agents)| agents)
+        .map(|a| a.handle.clone())
+        .collect()
 }

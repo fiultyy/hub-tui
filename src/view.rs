@@ -137,7 +137,7 @@ pub const SECTION_GAP: u16 = 1;
 /// 布局项: 分区标题或卡片。
 #[derive(Debug)]
 pub enum LayoutItem {
-    SectionHeader { category: StatusCategory, count: usize },
+    SectionHeader { group: String, count: usize },
     Card { sorted_idx: usize },
 }
 
@@ -167,13 +167,13 @@ pub fn directory_layout(
     let mut i = 0;
     while i < sorted.len() {
         let agent = &model.directory[&sorted[i]];
-        let cat = StatusCategory::from_agent(agent);
+        let group = agent.cwd.clone();
 
-        // 收集同分类的连续句柄(sorted 保证连续)
+        // 收集同 worktreePath 的连续句柄(sorted 保证连续)
         let group_start = i;
         while i < sorted.len() {
             let a = &model.directory[&sorted[i]];
-            if StatusCategory::from_agent(a) != cat {
+            if a.cwd != group {
                 break;
             }
             i += 1;
@@ -182,7 +182,7 @@ pub fn directory_layout(
 
         // 分区标题
         entries.push(LayoutEntry {
-            item: LayoutItem::SectionHeader { category: cat, count },
+            item: LayoutItem::SectionHeader { group, count },
             x: inner_x,
             y,
             w: inner_w,
@@ -253,10 +253,10 @@ fn category_color(cat: StatusCategory, theme: &Theme) -> Color {
     }
 }
 
-/// Directory tab: agent card 按状态分区垂直堆叠。
+/// Directory tab: agent card 按 worktreePath 分组垂直堆叠。
 ///
-/// 布局(从上到下): 每个状态分类一个分区, 先标题行后卡片网格。
-/// 卡片 3 行高(色块底色): handle+title / cwd / icon+source·state(branch)。
+/// 布局(从上到下): 每个 worktreePath 一个分区, 先标题行(📂 path (N))后卡片网格。
+/// 分区按最近活跃排序(最近在前)。卡片 5 行高(色块底色)。
 /// 滚动: cursor 所在分区对齐视口顶部。
 fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     let focused = matches!(shell.focus, crate::shell::FocusTarget::Directory);
@@ -285,8 +285,8 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
         }
         let adj_y = entry.y.saturating_sub(scroll_y) + inner.y;
         match &entry.item {
-            LayoutItem::SectionHeader { category, count } => {
-                draw_section_header(f, *category, *count, entry.x, adj_y, entry.w, theme);
+            LayoutItem::SectionHeader { group, count } => {
+                draw_section_header(f, group, *count, entry.x, adj_y, entry.w, theme);
             }
             LayoutItem::Card { sorted_idx } => {
                 if let Some(agent) = sorted.get(*sorted_idx).and_then(|h| model.directory.get(h)) {
@@ -300,10 +300,10 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     }
 }
 
-/// 渲染分区标题行: 图标 + 标签 + (数量) + 分隔线。
+/// 渲染分区标题行: 📂 worktreePath + (数量) + 分隔线。
 fn draw_section_header(
     f: &mut Frame,
-    category: StatusCategory,
+    group: &str,
     count: usize,
     x: u16,
     y: u16,
@@ -311,13 +311,20 @@ fn draw_section_header(
     theme: &Theme,
 ) {
     use unicode_width::UnicodeWidthStr;
-    let color = category_color(category, theme);
-    let prefix = format!(" {} {} ({}) ", category.icon(), category.label(), count);
+    let home = std::env::var("HOME").unwrap_or_default();
+    let display = if group.is_empty() {
+        "(global)".to_string()
+    } else if !home.is_empty() && group.starts_with(&home) {
+        format!("~{}", &group[home.len()..])
+    } else {
+        group.to_string()
+    };
+    let prefix = format!(" \u{1f4c2} {} ({}) ", display, count);
     let prefix_w = UnicodeWidthStr::width(prefix.as_str()) as u16;
     let divider_w = w.saturating_sub(prefix_w);
 
     let mut spans = vec![
-        Span::styled(prefix, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::styled(prefix, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
     ];
     if divider_w > 0 {
         spans.push(Span::styled(
