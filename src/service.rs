@@ -80,7 +80,7 @@ impl Service {
             tx,
             last_terminal_fetch: Instant::now() - REFRESH_INTERVAL,
             terminal_fetch_in_flight: Arc::new(AtomicBool::new(false)),
-            last_status_mtime: initial_mtime,
+            last_status_mtime: None,
             cli_lock: Arc::new(Mutex::new(())),
             db,
         };

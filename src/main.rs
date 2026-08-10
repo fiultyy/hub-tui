@@ -70,7 +70,12 @@ fn main() -> io::Result<()> {
     };
 
     // T2: 启动时立即拉一次数据(ADR-5)
-    svc.execute(vec![update::Cmd::RefreshAgents]);
+    // 启动时立即全量刷新(不等 5s tick): agents + status + messages
+    svc.execute(vec![
+        update::Cmd::RefreshAgents,
+        update::Cmd::RefreshStatus,
+        update::Cmd::DrainMessages,
+    ]);
 
     run_loop(&mut term, &rx, &model, &mut shell, &mut svc, &tx)
 }
