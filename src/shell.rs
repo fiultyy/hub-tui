@@ -109,6 +109,16 @@ pub struct Shell {
     pub snippet_overlay_active: bool,
     /// Alert Rules 浮层激活(N 键)。
     pub rule_overlay_active: bool,
+    /// Macro library 浮层激活(e 键)。
+    pub macro_overlay_active: bool,
+    /// 宏录制中。
+    pub recording_active: bool,
+    /// 宏录制缓冲(累积 KeyEvent)。
+    pub recording_buffer: Vec<crossterm::event::KeyEvent>,
+    /// 正在录制的宏名(非录制时为空)。
+    pub recording_name: String,
+    /// 宏回放队列(非空时每 tick 回放一个键)。
+    pub replay_queue: Vec<crossterm::event::KeyEvent>,
     /// 全局搜索浮层激活(Ctrl-S)。
     pub search_active: bool,
     /// 搜索查询输入。
@@ -157,6 +167,11 @@ impl Shell {
             orch_tasks_active: false,
             worktree_ps_active: false,
             config_overlay_active: false,
+            macro_overlay_active: false,
+            recording_active: false,
+            recording_buffer: Vec::new(),
+            recording_name: String::new(),
+            replay_queue: Vec::new(),
             selected_set: std::collections::HashSet::new(),
             theme_name: "default".to_string(),
             generation: 0,

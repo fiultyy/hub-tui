@@ -125,6 +125,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.rule_overlay_active {
         draw_rule_overlay(f, model, shell, area, &theme);
     }
+    // Macro 浮层
+    if shell.macro_overlay_active {
+        draw_macro_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -993,6 +997,21 @@ fn draw_status_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
         ConnState::Disconnected => ("disconnected", theme.error),
     };
     spans.push(Span::styled(conn_label, Style::default().fg(conn_color)));
+    // Recording indicator
+    if shell.recording_active {
+        spans.push(Span::styled(
+            format!(" ●REC {} ", shell.recording_name),
+            Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // Replay indicator
+    if !shell.replay_queue.is_empty() {
+        spans.push(Span::styled(
+            format!(" ▶PLAY ({} left) ", shell.replay_queue.len()),
+            Style::default().fg(theme.success),
+        ));
+    }
 
     // 右侧: 根据当前 tab + 模式显示不同快捷键提示
     let right_hint = status_hint(shell);
@@ -1951,6 +1970,80 @@ fn draw_rule_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, th
         .title(Span::styled(title, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
     let inner = block.inner(overlay_area);
     f.render_widget(block, overlay_area);
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+/// Macro library overlay: sorted alphabetically, shows key count + relative time, scrollable.
+fn draw_macro_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+
+    let mut names: Vec<&String> = model.macros.keys().collect();
+    names.sort();
+
+    let now = crate::model::now_ms();
+
+    let lines: Vec<Line> = names
+        .iter()
+        .map(|name| {
+            let m = &model.macros[*name];
+            let count = crate::model::count_key_events(&m.key_events_json);
+            let elapsed_ms = now.saturating_sub(m.created_at_ms);
+            let time_label = if elapsed_ms < 60_000 {
+                format!("{}s ago", elapsed_ms / 1000)
+            } else if elapsed_ms < 3_600_000 {
+                format!("{}m ago", elapsed_ms / 60_000)
+            } else {
+                format!("{}h ago", elapsed_ms / 3_600_000)
+            };
+            Line::from(vec![
+                Span::styled(format!(" {name}"), Style::default().fg(theme.accent)),
+                Span::styled(format!("({count} keys)  "), Style::default().fg(theme.fg)),
+                Span::styled(time_label, Style::default().fg(theme.muted)),
+            ])
+        })
+        .collect();
+
+    let lines = if lines.is_empty() {
+        vec![Line::from(Span::styled(
+            " No macros recorded yet. Use 'macro:record:name' to start.",
+            Style::default().fg(theme.muted),
+        ))]
+    } else {
+        lines
+    };
+
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Macros (Enter:run d:delete Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
     let visible_h = inner.height as usize;
     let total = lines.len();
     let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));

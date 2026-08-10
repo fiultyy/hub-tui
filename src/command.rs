@@ -280,6 +280,21 @@ pub fn builtin_commands() -> Vec<Command> {
             "View and manage alert rules overlay (N)",
             show_alert_rules,
         ),
+        Command::new(
+            "record macro",
+            "Start recording a named macro (enters input mode: macro:record:<name>)",
+            record_macro_input,
+        ),
+        Command::new(
+            "run macro",
+            "Replay a saved macro by name (enters input mode: macro:run:<name>)",
+            run_macro_input,
+        ),
+        Command::new(
+            "macro library",
+            "Browse saved macros overlay (e) — select to replay, d to delete",
+            show_macro_library,
+        ),
     ]
 }
 
@@ -549,6 +564,26 @@ fn show_snippet_library(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 }
 fn show_history(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.history_overlay_active = true;
+    shell.overlay_scroll = 0;
+    vec![]
+}
+
+fn record_macro_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "macro:record:".to_string();
+    vec![]
+}
+
+fn run_macro_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "macro:run:".to_string();
+    vec![]
+}
+
+fn show_macro_library(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.macro_overlay_active = true;
     shell.overlay_scroll = 0;
     vec![]
 }

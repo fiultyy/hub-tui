@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 7;
+const DB_VERSION: i64 = 8;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -197,7 +197,13 @@ impl Db {
                 created_at INTEGER NOT NULL
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '7');
+            CREATE TABLE IF NOT EXISTS macros (
+                name       TEXT PRIMARY KEY,
+                key_events TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '8');
             ",
         )
         .ok()?;
@@ -786,6 +792,49 @@ impl Db {
         });
         rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
     }
+    // ──── Macros ────
+
+    /// 保存/覆盖宏(幂等)。
+    pub fn upsert_macro(&self, name: &str, key_events_json: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let ts = crate::model::now_ms();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO macros (name, key_events, created_at) VALUES (?1, ?2, ?3)",
+            params![name, key_events_json, ts],
+        );
+    }
+
+    /// 移除宏。
+    pub fn remove_macro(&self, name: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute("DELETE FROM macros WHERE name = ?1", params![name]);
+    }
+
+    /// 加载所有宏 → Vec<RecordedMacro>。
+    pub fn load_macros(&self) -> Vec<crate::model::RecordedMacro> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        let mut stmt = match conn.prepare("SELECT name, key_events, created_at FROM macros ORDER BY created_at") {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        let rows = stmt.query_map([], |r| {
+            Ok(crate::model::RecordedMacro {
+                name: r.get(0)?,
+                key_events_json: r.get(1)?,
+                created_at_ms: r.get(2)?,
+            })
+        });
+        rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
+    }
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -832,7 +881,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("7".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("8".to_string()));
     }
 
     #[test]

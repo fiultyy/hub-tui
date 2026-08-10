@@ -293,6 +293,16 @@ impl Service {
                         db.remove_alert_rule(id);
                     }
                 }
+                crate::update::Cmd::PersistMacro(m) => {
+                    if let Some(db) = &self.db {
+                        db.upsert_macro(&m.name, &m.key_events_json);
+                    }
+                }
+                crate::update::Cmd::RemoveMacro { name } => {
+                    if let Some(db) = &self.db {
+                        db.remove_macro(&name);
+                    }
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }

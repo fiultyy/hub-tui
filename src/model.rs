@@ -344,6 +344,8 @@ pub struct Model {
     pub snippets: HashMap<String, String>,
     /// 告警规则列表(持久化到 DB)。
     pub alert_rules: Vec<AlertRule>,
+    /// 录制的宏: name → RecordedMacro(持久化到 DB)。
+    pub macros: HashMap<String, RecordedMacro>,
 }
 
 impl Model {
@@ -360,9 +362,10 @@ impl Model {
             worktree_ps: Vec::new(),
             tags: HashMap::new(),
             alert_rules: Vec::new(),
-            orch_snapshot: None,
             snippets: HashMap::new(),
+            orch_snapshot: None,
             config: HashMap::new(),
+            macros: HashMap::new(),
             pinned: HashSet::new(),
         }
     }
@@ -576,6 +579,34 @@ impl Model {
     /// 启动时从 DB 加载规则(替换)。
     pub fn apply_alert_rules(&mut self, rules: Vec<AlertRule>) {
         self.alert_rules = rules;
+    }
+    // ──── Macros(宏录制)────
+
+    /// 保存/覆盖宏(cap MACROS_CAP, FIFO 溢出)。
+    pub fn add_macro(&mut self, m: RecordedMacro) {
+        if self.macros.len() >= MACROS_CAP && !self.macros.contains_key(&m.name) {
+            if let Some(oldest) = self.macros.keys().next().cloned() {
+                self.macros.remove(&oldest);
+            }
+        }
+        self.macros.insert(m.name.clone(), m);
+        self.generation += 1;
+    }
+
+    /// 移除宏。
+    pub fn remove_macro(&mut self, name: &str) {
+        self.macros.remove(name);
+        self.generation += 1;
+    }
+
+    /// 获取宏。
+    pub fn get_macro(&self, name: &str) -> Option<&RecordedMacro> {
+        self.macros.get(name)
+    }
+
+    /// 启动时从 DB 加载宏(替换)。
+    pub fn apply_macros(&mut self, macros: Vec<RecordedMacro>) {
+        self.macros = macros.into_iter().map(|m| (m.name.clone(), m)).collect();
     }
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
     pub fn push_history(&mut self, text: String) {
@@ -1277,4 +1308,142 @@ pub fn check_alert_rules(rules: &[AlertRule], ctx: &CheckContext) -> Vec<String>
         }
     }
     toasts
+}
+
+
+// ───────────────────────── Macros(宏录制) ─────────────────────────
+
+/// Macro 上限。
+pub const MACROS_CAP: usize = 50;
+
+/// crossterm KeyEvent 的可序列化包装(DB JSON 持久化用)。
+/// 只保存 code + modifiers; replay 时 kind=Press, state=NONE。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializableKeyEvent {
+    /// 按键代码: "a", "Enter", "Esc", "Up", "Tab", "Backspace", "F1", …
+    pub code: String,
+    /// 修饰键: "NONE", "CONTROL", "SHIFT", "ALT", "CONTROL|SHIFT", …
+    pub modifiers: String,
+}
+
+/// KeyCode → 字符串(序列化方向)。
+fn key_code_to_str(code: &crossterm::event::KeyCode) -> String {
+    use crossterm::event::KeyCode;
+    match code {
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Enter => "Enter".into(),
+        KeyCode::Esc => "Esc".into(),
+        KeyCode::Backspace => "Backspace".into(),
+        KeyCode::Tab => "Tab".into(),
+        KeyCode::BackTab => "BackTab".into(),
+        KeyCode::Up => "Up".into(),
+        KeyCode::Down => "Down".into(),
+        KeyCode::Left => "Left".into(),
+        KeyCode::Right => "Right".into(),
+        KeyCode::Home => "Home".into(),
+        KeyCode::End => "End".into(),
+        KeyCode::PageUp => "PageUp".into(),
+        KeyCode::PageDown => "PageDown".into(),
+        KeyCode::Insert => "Insert".into(),
+        KeyCode::Delete => "Delete".into(),
+        KeyCode::F(n) => format!("F{n}"),
+        _ => "Null".into(),
+    }
+}
+
+/// 字符串 → KeyCode(反序列化方向)。未知返回 Null。
+fn str_to_key_code(s: &str) -> crossterm::event::KeyCode {
+    use crossterm::event::KeyCode;
+    match s {
+        "Enter" => KeyCode::Enter,
+        "Esc" => KeyCode::Esc,
+        "Backspace" => KeyCode::Backspace,
+        "Tab" => KeyCode::Tab,
+        "BackTab" => KeyCode::BackTab,
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        "Insert" => KeyCode::Insert,
+        "Delete" => KeyCode::Delete,
+        "Null" => KeyCode::Null,
+        other if other.starts_with('F') && other.len() > 1 => {
+            other[1..].parse::<u8>().ok().map(KeyCode::F).unwrap_or(KeyCode::Null)
+        }
+        other => KeyCode::Char(other.chars().next().unwrap_or('\0')),
+    }
+}
+
+/// KeyModifiers → 字符串。
+fn key_modifiers_to_str(m: &crossterm::event::KeyModifiers) -> String {
+    use crossterm::event::KeyModifiers;
+    let mut parts = Vec::new();
+    if m.contains(KeyModifiers::SHIFT) { parts.push("SHIFT"); }
+    if m.contains(KeyModifiers::CONTROL) { parts.push("CONTROL"); }
+    if m.contains(KeyModifiers::ALT) { parts.push("ALT"); }
+    if parts.is_empty() { "NONE".into() } else { parts.join("|") }
+}
+
+/// 字符串 → KeyModifiers。
+fn str_to_key_modifiers(s: &str) -> crossterm::event::KeyModifiers {
+    use crossterm::event::KeyModifiers;
+    let mut m = KeyModifiers::NONE;
+    for part in s.split('|') {
+        match part.trim() {
+            "SHIFT" => m |= KeyModifiers::SHIFT,
+            "CONTROL" => m |= KeyModifiers::CONTROL,
+            "ALT" => m |= KeyModifiers::ALT,
+            _ => {}
+        }
+    }
+    m
+}
+
+impl SerializableKeyEvent {
+    pub fn from_key_event(k: &crossterm::event::KeyEvent) -> Self {
+        Self {
+            code: key_code_to_str(&k.code),
+            modifiers: key_modifiers_to_str(&k.modifiers),
+        }
+    }
+
+    pub fn to_key_event(&self) -> crossterm::event::KeyEvent {
+        let code = str_to_key_code(&self.code);
+        let modifiers = str_to_key_modifiers(&self.modifiers);
+        crossterm::event::KeyEvent::new(code, modifiers)
+    }
+}
+
+/// 序列化 KeyEvent 列表为 JSON 字符串。
+pub fn serialize_key_events(events: &[crossterm::event::KeyEvent]) -> String {
+    let serializable: Vec<SerializableKeyEvent> = events.iter().map(SerializableKeyEvent::from_key_event).collect();
+    serde_json::to_string(&serializable).unwrap_or_else(|_| "[]".into())
+}
+
+/// 反序列化 JSON 字符串为 KeyEvent 列表。
+pub fn deserialize_key_events(json: &str) -> Vec<crossterm::event::KeyEvent> {
+    serde_json::from_str::<Vec<SerializableKeyEvent>>(json)
+        .unwrap_or_default()
+        .iter()
+        .map(|s| s.to_key_event())
+        .collect()
+}
+
+/// 一条录制的宏: 命名 + KeyEvent 序列(JSON)。
+#[derive(Debug, Clone)]
+pub struct RecordedMacro {
+    pub name: String,
+    pub key_events_json: String,
+    pub created_at_ms: i64,
+}
+
+/// 统计 JSON 中保存的按键数(轻量解析, 不完整反序列化)。
+pub fn count_key_events(json: &str) -> usize {
+    serde_json::from_str::<Vec<SerializableKeyEvent>>(json)
+        .map(|v| v.len())
+        .unwrap_or(0)
 }

@@ -88,6 +88,10 @@ pub enum Cmd {
     PersistAlertRule(crate::model::AlertRule),
     /// 移除告警规则。
     RemoveAlertRule { id: i64 },
+    /// 持久化宏到 DB。
+    PersistMacro(crate::model::RecordedMacro),
+    /// 移除宏。
+    RemoveMacro { name: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -123,7 +127,24 @@ fn note_event(model: &mut Model, sev: EventSeverity, cat: EventCategory, source:
 /// 纯函数 reducer。绝不 IO, 改 Model/Shell + 返 Cmd Vec。
 pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
     match msg {
-        AppMsg::Key(k) => handle_key(model, shell, k),
+        AppMsg::Key(k) => {
+            // ── Replay cancel on real keypress ──
+            if !shell.replay_queue.is_empty() {
+                let cancelled = shell.replay_queue.len();
+                shell.replay_queue.clear();
+                shell.push_toast(format!("replay cancelled ({cancelled} keys remaining)"));
+            }
+            // ── Recording capture ──
+            if shell.recording_active {
+                let is_quit = matches!((k.code, k.modifiers),
+                    (KeyCode::Char('q'), KeyModifiers::NONE) |
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL));
+                if !is_quit {
+                    shell.recording_buffer.push(k);
+                }
+            }
+            handle_key(model, shell, k)
+        }
 
         // ──── 鼠标左键点击(选中 card) ────
         AppMsg::MouseLeftClick { x, y } => {
@@ -153,6 +174,11 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
                 cmds.push(Cmd::RefreshAgents);
                 cmds.push(Cmd::DrainMessages);
                 cmds.push(Cmd::RefreshUnread);
+            }
+            // ── Macro replay pump: one key per tick (50ms = 20 keys/sec) ──
+            if !shell.replay_queue.is_empty() {
+                let event = shell.replay_queue.remove(0);
+                cmds.extend(handle_key(model, shell, event));
             }
             cmds
         }
@@ -374,10 +400,31 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
+
+
+    // Esc stops recording (if recording and not in insert mode)
+    if shell.recording_active && !shell.insert_mode && k.code == KeyCode::Esc {
+        // Remove trailing Esc from buffer (it was just captured by update())
+        if shell.recording_buffer.last().map(|e| e.code == KeyCode::Esc).unwrap_or(false) {
+            shell.recording_buffer.pop();
+        }
+        let name = std::mem::take(&mut shell.recording_name);
+        let events = std::mem::take(&mut shell.recording_buffer);
+        shell.recording_active = false;
+        if events.is_empty() {
+            shell.push_toast(format!("macro empty: {name}"));
+            return vec![];
+        }
+        let json = crate::model::serialize_key_events(&events);
+        let m = crate::model::RecordedMacro { name: name.clone(), key_events_json: json, created_at_ms: crate::model::now_ms() };
+        model.add_macro(m.clone());
+        shell.push_toast(format!("macro saved: {name} ({} keys)", events.len()));
+        return vec![Cmd::PersistMacro(m)];
+    }
 
     match (k.code, k.modifiers) {
         // Ctrl-P 或 : 打开命令面板
@@ -456,6 +503,13 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('N'), KeyModifiers::SHIFT) if !shell.insert_mode => {
             shell.rule_overlay_active = !shell.rule_overlay_active;
             if shell.rule_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+
+        // e: macro library overlay (toggle)
+        (KeyCode::Char('e'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.macro_overlay_active = !shell.macro_overlay_active;
+            if shell.macro_overlay_active { shell.overlay_scroll = 0; }
             return vec![];
         }
 
@@ -1050,6 +1104,68 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![];
     }
 
+    // macro:record:<name> / macro:stop / macro:run:<name> / macro:rm:<name> / macro:list
+    if let Some(rest) = buf.strip_prefix("macro:") {
+        if let Some(name) = rest.strip_prefix("record:") {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return vec![];
+            }
+            shell.recording_active = true;
+            shell.recording_buffer.clear();
+            shell.recording_name = name.clone();
+            shell.push_toast(format!("\u{25cf} REC {name} (Esc to stop)"));
+            return vec![Cmd::Noop];
+        }
+        if rest == "stop" {
+            if !shell.recording_active {
+                return vec![];
+            }
+            let name = std::mem::take(&mut shell.recording_name);
+            let events = std::mem::take(&mut shell.recording_buffer);
+            shell.recording_active = false;
+            if events.is_empty() {
+                shell.push_toast("macro empty (no keys recorded)".into());
+                return vec![];
+            }
+            let json = crate::model::serialize_key_events(&events);
+            let m = crate::model::RecordedMacro { name: name.clone(), key_events_json: json, created_at_ms: crate::model::now_ms() };
+            model.add_macro(m.clone());
+            shell.push_toast(format!("macro saved: {name} ({} keys)", events.len()));
+            return vec![Cmd::PersistMacro(m)];
+        }
+        if let Some(name) = rest.strip_prefix("run:") {
+            let name = name.trim();
+            if let Some(macro_obj) = model.get_macro(name) {
+                let events = crate::model::deserialize_key_events(&macro_obj.key_events_json);
+                let count = events.len();
+                shell.replay_queue = events;
+                shell.push_toast(format!("\u{25b6} replaying: {name} ({count} keys)"));
+            } else {
+                shell.push_toast(format!("macro not found: {name}"));
+            }
+            return vec![Cmd::Noop];
+        }
+        if let Some(name) = rest.strip_prefix("rm:") {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                model.remove_macro(&name);
+                shell.push_toast(format!("macro removed: {name}"));
+                return vec![Cmd::RemoveMacro { name }];
+            }
+            return vec![];
+        }
+        if rest == "list" {
+            shell.macro_overlay_active = !shell.macro_overlay_active;
+            if shell.macro_overlay_active {
+                shell.overlay_scroll = 0;
+            }
+            return vec![];
+        }
+        shell.push_toast("macro: usage: macro:record:<name> | macro:stop | macro:run:<name> | macro:rm:<name> | macro:list".into());
+        return vec![];
+    }
+
     vec![]
 }
 
@@ -1343,6 +1459,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.activity_active = false;
             shell.snippet_overlay_active = false;
             shell.history_overlay_active = false;
+            shell.macro_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
@@ -1390,6 +1507,36 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                 return vec![Cmd::RemoveAlertRule { id }];
             }
             shell.overlay_scroll = 0;
+            vec![]
+        }
+
+        // ── Macro overlay: Enter runs macro ──
+        (KeyCode::Enter, KeyModifiers::NONE) if shell.macro_overlay_active => {
+            shell.macro_overlay_active = false;
+            let mut names: Vec<String> = model.macros.keys().cloned().collect();
+            names.sort();
+            let idx = shell.overlay_scroll.min(names.len().saturating_sub(1));
+            if let Some(name) = names.get(idx) {
+                if let Some(macro_obj) = model.get_macro(name) {
+                    let events = crate::model::deserialize_key_events(&macro_obj.key_events_json);
+                    shell.replay_queue = events.clone();
+                    shell.push_toast(format!("\u{25b6} replaying: {name} ({} keys)", events.len()));
+                }
+            }
+            shell.overlay_scroll = 0;
+            vec![]
+        }
+        // ── Macro overlay: d deletes macro ──
+        (KeyCode::Char('d'), KeyModifiers::NONE) if shell.macro_overlay_active => {
+            let mut names: Vec<String> = model.macros.keys().cloned().collect();
+            names.sort();
+            let idx = shell.overlay_scroll.min(names.len().saturating_sub(1));
+            if let Some(name) = names.get(idx).cloned() {
+                model.remove_macro(&name);
+                shell.push_toast(format!("macro removed: {name}"));
+                shell.overlay_scroll = 0;
+                return vec![Cmd::RemoveMacro { name }];
+            }
             vec![]
         }
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {

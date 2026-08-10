@@ -74,6 +74,8 @@ fn main() -> io::Result<()> {
         mdl.apply_snippets(snippets);
         let alert_rules = svc.db.as_ref().map(|db| db.load_alert_rules()).unwrap_or_default();
         mdl.apply_alert_rules(alert_rules);
+        let macros = svc.db.as_ref().map(|db| db.load_macros()).unwrap_or_default();
+        mdl.apply_macros(macros);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 
