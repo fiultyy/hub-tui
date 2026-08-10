@@ -301,6 +301,11 @@ pub fn builtin_commands() -> Vec<Command> {
             save_view_input,
         ),
         Command::new(
+            "add note",
+            "Add a note to an agent (enters input mode: note:handle text)",
+            add_note_input,
+        ),
+        Command::new(
             "view presets",
             "Browse saved view presets (V)",
             show_view_presets,
@@ -608,6 +613,13 @@ fn save_view_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 fn show_view_presets(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.views_overlay_active = true;
     shell.overlay_scroll = 0;
+    vec![]
+}
+
+fn add_note_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "note:".to_string();
     vec![]
 }
 

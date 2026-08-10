@@ -136,6 +136,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.metrics_overlay_active {
         draw_metrics_overlay(f, model, shell, area, &theme);
     }
+    // Agent Note 浮层
+    if shell.note_overlay_active {
+        draw_note_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -380,7 +384,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                         v.sort();
                         v
                     }).unwrap_or_default();
-                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread);
+                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread, model.notes.contains_key(&agent.handle));
                 }
             }
         }
@@ -530,6 +534,7 @@ fn draw_agent_card(
     pinned: bool,
     tags: &[String],
     unread: usize,
+    has_note: bool,
 ) {
     use unicode_width::UnicodeWidthStr;
 
@@ -552,11 +557,13 @@ fn draw_agent_card(
     } else {
         String::new()
     };
+    let note_badge = if has_note { " 📝" } else { "" };
+    let note_badge_w = UnicodeWidthStr::width(note_badge);
     let tag_badge_w = UnicodeWidthStr::width(tag_badge.as_str());
     let right_w = UnicodeWidthStr::width(right_part.as_str()) + 1; // +1 for gap
     let badge_w = UnicodeWidthStr::width(badge_str.as_str());
     let icon_w = UnicodeWidthStr::width(icon) + 1; // icon + space
-    let title_max = avail.saturating_sub(icon_w + badge_w + tag_badge_w + right_w);
+    let title_max = avail.saturating_sub(icon_w + badge_w + tag_badge_w + note_badge_w + right_w);
     let title_trunc = if !title_text.is_empty() && title_max > 2 {
         crate::render::truncate_width(title_text, title_max)
     } else {
@@ -580,6 +587,12 @@ fn draw_agent_card(
         row0_spans.push(Span::styled(
             tag_badge,
             Style::default().fg(theme.accent),
+        ));
+    }
+    if !note_badge.is_empty() {
+        row0_spans.push(Span::styled(
+            note_badge,
+            Style::default().fg(theme.muted),
         ));
     }
     row0_spans.push(Span::styled(" ", Style::default()));
@@ -2247,6 +2260,52 @@ fn draw_metrics_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect,
     let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
     let end = (start + visible_h).min(total);
     f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+// ───────────────────────── Agent Note 浮层 ─────────────────────────
+
+/// Agent Note 编辑浮层: 显示/编辑指定 agent 的备注文本。
+fn draw_note_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+
+    // Get the handle we're viewing
+    let handle = match &shell.note_viewing_handle {
+        Some(h) => h,
+        None => return,
+    };
+
+    // Centered overlay area
+    let overlay_h = (area.height.saturating_sub(4)).max(8);
+    let overlay_w = (area.width.saturating_sub(4)).max(50);
+    let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+
+    f.render_widget(Clear, overlay_area);
+
+    // Title shows the handle
+    let title = format!(" Note: {} (Enter:save Esc:cancel) ", handle);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(title, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    // Show the edit buffer text, with empty state hint
+    let lines: Vec<Line> = if shell.note_edit_buf.is_empty() {
+        vec![Line::from(Span::styled(
+            " (type to add a note, Enter to save, Esc to cancel)",
+            Style::default().fg(theme.muted),
+        ))]
+    } else {
+        shell
+            .note_edit_buf
+            .lines()
+            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(theme.fg))))
+            .collect()
+    };
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]

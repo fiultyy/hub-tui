@@ -78,6 +78,8 @@ fn main() -> io::Result<()> {
         mdl.apply_macros(macros);
         let saved_views = svc.db.as_ref().map(|db| db.load_saved_views()).unwrap_or_default();
         mdl.apply_saved_views(saved_views);
+        let notes = svc.db.as_ref().map(|db| db.load_notes()).unwrap_or_default();
+        mdl.apply_notes(notes);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 

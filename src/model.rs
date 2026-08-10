@@ -348,7 +348,10 @@ pub struct Model {
     pub macros: HashMap<String, RecordedMacro>,
     /// 视图预设: name → ViewSnapshot(持久化到 DB)。
     pub saved_views: HashMap<String, ViewSnapshot>,
+    /// Agent 笔记: handle → note text(持久化到 DB)。
+    pub notes: HashMap<String, String>,
 }
+
 
 impl Model {
     pub fn new() -> Self {
@@ -366,10 +369,11 @@ impl Model {
             alert_rules: Vec::new(),
             snippets: HashMap::new(),
             orch_snapshot: None,
-            config: HashMap::new(),
-            macros: HashMap::new(),
-            pinned: HashSet::new(),
             saved_views: HashMap::new(),
+            notes: HashMap::new(),
+            macros: HashMap::new(),
+            config: HashMap::new(),
+            pinned: HashSet::new(),
         }
     }
 
@@ -639,6 +643,29 @@ impl Model {
     /// 启动时从 DB 加载视图预设(替换)。
     pub fn apply_saved_views(&mut self, views: Vec<(String, ViewSnapshot)>) {
         self.saved_views = views.into_iter().collect();
+    }
+    // ──── Notes(Agent 笔记)────
+
+    /// 保存/覆盖 agent 笔记。
+    pub fn add_note(&mut self, handle: &str, text: &str) {
+        self.notes.insert(handle.to_string(), text.to_string());
+        self.generation += 1;
+    }
+
+    /// 移除 agent 笔记。
+    pub fn remove_note(&mut self, handle: &str) {
+        self.notes.remove(handle);
+        self.generation += 1;
+    }
+
+    /// 获取 agent 笔记。
+    pub fn get_note(&self, handle: &str) -> Option<&String> {
+        self.notes.get(handle)
+    }
+
+    /// 启动时从 DB 加载笔记(替换)。
+    pub fn apply_notes(&mut self, notes: HashMap<String, String>) {
+        self.notes = notes;
     }
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
     pub fn push_history(&mut self, text: String) {

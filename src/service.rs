@@ -313,6 +313,16 @@ impl Service {
                         db.remove_saved_view(&name);
                     }
                 }
+                crate::update::Cmd::PersistNote { handle, text } => {
+                    if let Some(db) = &self.db {
+                        db.upsert_note(&handle, &text);
+                    }
+                }
+                crate::update::Cmd::RemoveNote { handle } => {
+                    if let Some(db) = &self.db {
+                        db.remove_note(&handle);
+                    }
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }

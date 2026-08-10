@@ -96,6 +96,10 @@ pub enum Cmd {
     PersistView { name: String, json: String },
     /// 移除视图预设。
     RemoveView { name: String },
+    /// 持久化 agent 笔记到 DB。
+    PersistNote { handle: String, text: String },
+    /// 移除 agent 笔记。
+    RemoveNote { handle: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -404,7 +408,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -531,6 +535,19 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             return vec![];
         }
 
+
+        // n: note overlay for current agent
+        (KeyCode::Char('n'), KeyModifiers::NONE) if !shell.insert_mode => {
+            if let Some(handle) = selected_agent_handle(model, shell) {
+                shell.note_overlay_active = true;
+                shell.note_viewing_handle = Some(handle.clone());
+                shell.note_edit_buf = model.get_note(&handle).cloned().unwrap_or_default();
+                shell.overlay_scroll = 0;
+            } else {
+                shell.push_toast("no agent selected".into());
+            }
+            return vec![];
+        }
         (KeyCode::Char('q'), KeyModifiers::NONE) if !shell.insert_mode => {
             return vec![Cmd::Quit];
         }
@@ -1262,6 +1279,30 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![];
     }
 
+    // note:<handle> <text> / note:rm:<handle>
+    if let Some(rest) = buf.strip_prefix("note:") {
+        if let Some(handle) = rest.strip_prefix("rm:") {
+            let handle = handle.trim().to_string();
+            if !handle.is_empty() {
+                model.remove_note(&handle);
+                shell.push_toast(format!("note removed: {handle}"));
+                return vec![Cmd::RemoveNote { handle }];
+            }
+            return vec![];
+        }
+        if let Some((handle, text)) = rest.split_once(' ') {
+            let handle = handle.trim().to_string();
+            let text = text.trim().to_string();
+            if !handle.is_empty() && !text.is_empty() {
+                model.add_note(&handle, &text);
+                shell.push_toast(format!("note saved: {handle}"));
+                return vec![Cmd::PersistNote { handle, text }];
+            }
+        }
+        shell.push_toast("note: usage: note:<handle> <text> | note:rm:<handle>".into());
+        return vec![];
+    }
+
     vec![]
 }
 
@@ -1538,9 +1579,6 @@ fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
     }
 }
 
-// ───────────────────────── 浮层键盘处理 ─────────────────────────
-
-/// 浮层键盘: j/k 滚动, Esc/q 关闭。
 fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     match (k.code, k.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
@@ -1556,6 +1594,9 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.snippet_overlay_active = false;
             shell.macro_overlay_active = false;
             shell.views_overlay_active = false;
+            shell.note_overlay_active = false;
+            shell.note_viewing_handle = None;
+            shell.note_edit_buf.clear();
             shell.metrics_overlay_active = false;
             vec![]
         }
@@ -1670,6 +1711,39 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.metrics_window = shell.metrics_window.cycle();
             shell.overlay_scroll = 0;
             vec![]
+        }
+        // ── Note overlay: Enter saves note ──
+        (KeyCode::Enter, KeyModifiers::NONE) if shell.note_overlay_active => {
+            if let Some(handle) = shell.note_viewing_handle.clone() {
+                let text = shell.note_edit_buf.trim().to_string();
+                if text.is_empty() {
+                    model.remove_note(&handle);
+                    shell.push_toast(format!("note removed: {handle}"));
+                    shell.note_overlay_active = false;
+                    shell.note_viewing_handle = None;
+                    shell.note_edit_buf.clear();
+                    return vec![Cmd::RemoveNote { handle }];
+                } else {
+                    model.add_note(&handle, &text);
+                    shell.push_toast(format!("note saved: {handle}"));
+                    shell.note_overlay_active = false;
+                    shell.note_viewing_handle = None;
+                    shell.note_edit_buf.clear();
+                    return vec![Cmd::PersistNote { handle, text }];
+                }
+            }
+            shell.note_overlay_active = false;
+            vec![]
+        }
+        // ── Note overlay: char input ──
+        (KeyCode::Char(c), KeyModifiers::NONE) if shell.note_overlay_active => {
+            shell.note_edit_buf.push(c);
+            return vec![];
+        }
+        // ── Note overlay: backspace ──
+        (KeyCode::Backspace, KeyModifiers::NONE) if shell.note_overlay_active => {
+            shell.note_edit_buf.pop();
+            return vec![];
         }
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
             shell.overlay_scroll = shell.overlay_scroll.saturating_add(1);

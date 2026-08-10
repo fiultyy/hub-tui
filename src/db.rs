@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 9;
+const DB_VERSION: i64 = 10;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -209,7 +209,13 @@ impl Db {
                 created_at INTEGER NOT NULL
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '9');
+            CREATE TABLE IF NOT EXISTS agent_notes (
+                handle     TEXT PRIMARY KEY,
+                note       TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '10');
             ",
         )
         .ok()?;
@@ -889,6 +895,49 @@ impl Db {
         });
         rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
     }
+    // ──── Agent Notes ────
+
+    /// 保存/覆盖 agent 笔记(幂等)。
+    pub fn upsert_note(&self, handle: &str, note: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let ts = crate::model::now_ms();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO agent_notes (handle, note, updated_at) VALUES (?1, ?2, ?3)",
+            params![handle, note, ts],
+        );
+    }
+
+    /// 移除 agent 笔记。
+    pub fn remove_note(&self, handle: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute("DELETE FROM agent_notes WHERE handle = ?1", params![handle]);
+    }
+
+    /// 加载所有 agent 笔记 → handle → note。
+    pub fn load_notes(&self) -> std::collections::HashMap<String, String> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut stmt = match conn.prepare("SELECT handle, note FROM agent_notes") {
+            Ok(s) => s,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let _ = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| {
+                for row in rows.flatten() {
+                    map.insert(row.0, row.1);
+                }
+            });
+        map
+    }
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -935,7 +984,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("9".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("10".to_string()));
     }
 
     #[test]

@@ -125,6 +125,12 @@ pub struct Shell {
     pub metrics_overlay_active: bool,
     /// Metrics 时间窗口(浮层内 w 键切换)。
     pub metrics_window: crate::model::MetricsWindow,
+    /// Agent Note 浮层激活(n 键)。
+    pub note_overlay_active: bool,
+    /// 正在查看笔记的 agent handle(None = 列表模式)。
+    pub note_viewing_handle: Option<String>,
+    /// 笔记编辑缓冲(overlay 内输入)。
+    pub note_edit_buf: String,
     /// 全局搜索浮层激活(Ctrl-S)。
     pub search_active: bool,
     /// 搜索查询输入。
@@ -181,6 +187,9 @@ impl Shell {
             views_overlay_active: false,
             metrics_overlay_active: false,
             metrics_window: crate::model::MetricsWindow::OneHour,
+            note_overlay_active: false,
+            note_viewing_handle: None,
+            note_edit_buf: String::new(),
             selected_set: std::collections::HashSet::new(),
             theme_name: "default".to_string(),
             generation: 0,
