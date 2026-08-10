@@ -278,10 +278,12 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     let scroll_y = directory_scroll(shell.cursor, &layout, inner.height);
 
     for entry in &layout {
-        let adj_y = entry.y.saturating_sub(scroll_y) + inner.y;
-        if adj_y + entry.h <= inner.y || adj_y >= inner.bottom() {
+        // 内容空间剔除: 完全在视口上方/下方的项跳过
+        // (saturating_sub 会把上方项钳到 inner.y, 不加此守卫会导致重叠渲染)
+        if entry.y + entry.h <= scroll_y || entry.y >= scroll_y + inner.height {
             continue;
         }
+        let adj_y = entry.y.saturating_sub(scroll_y) + inner.y;
         match &entry.item {
             LayoutItem::SectionHeader { category, count } => {
                 draw_section_header(f, *category, *count, entry.x, adj_y, entry.w, theme);

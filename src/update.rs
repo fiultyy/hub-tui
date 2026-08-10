@@ -385,6 +385,10 @@ fn hit_test_card(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<usize> 
 
     for entry in &layout {
         if let LayoutItem::Card { sorted_idx } = entry.item {
+            // 跳过完全滚出视口顶部的卡片(saturating_sub 钳位会导致误命中)
+            if entry.y + entry.h <= scroll_y {
+                continue;
+            }
             let adj_y = entry.y.saturating_sub(scroll_y) + inner_y;
             // 点击落在卡片矩形内?
             if x >= entry.x
