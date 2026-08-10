@@ -90,6 +90,7 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             // 周期性刷新 agents(5s)
             if should_refresh_agents(shell) {
                 cmds.push(Cmd::RefreshAgents);
+                cmds.push(Cmd::DrainMessages);
             }
             cmds
         }
