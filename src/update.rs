@@ -548,6 +548,23 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             }
             return vec![];
         }
+
+        // f: focus mode toggle (show only selected_set agents)
+        (KeyCode::Char('f'), KeyModifiers::NONE) if !shell.insert_mode => {
+            if shell.selected_set.is_empty() {
+                shell.push_toast("no agents selected (Space to select)".into());
+            } else {
+                shell.focus_mode = !shell.focus_mode;
+                shell.cursor = 0;
+                let n = shell.selected_set.len();
+                if shell.focus_mode {
+                    shell.push_toast(format!("◉ FOCUS: showing {n} selected agents"));
+                } else {
+                    shell.push_toast("focus mode off".into());
+                }
+            }
+            return vec![];
+        }
         (KeyCode::Char('q'), KeyModifiers::NONE) if !shell.insert_mode => {
             return vec![Cmd::Quit];
         }
@@ -562,6 +579,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             shell.insert_mode = false;
             shell.group_detail_active = false;
             shell.selected_set.clear();
+            shell.focus_mode = false;
             shell.input_buf.clear();
             // 同步 focus 到对应 tab
             shell.focus = match shell.tab {

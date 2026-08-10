@@ -1680,3 +1680,18 @@ pub fn compute_agent_metrics(model: &Model, window: MetricsWindow) -> MetricsSna
         window, agents, category_totals, severity_totals, global_timeline,
     }
 }
+
+// ───────────────────────── Focus Mode(聚焦模式) ─────────────────────────
+
+/// 聚焦模式过滤: focus_mode=true 时仅保留 selected_set 中的 handle。
+/// focus_mode=false 时原样返回(零开销 clone)。
+pub fn apply_focus_filter(
+    sorted: Vec<String>,
+    focus_mode: bool,
+    selected: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    if !focus_mode || selected.is_empty() {
+        return sorted;
+    }
+    sorted.into_iter().filter(|h| selected.contains(h)).collect()
+}

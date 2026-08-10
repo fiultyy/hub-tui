@@ -359,6 +359,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     } else {
         directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
     };
+    let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
     let layout = directory_layout(&sorted, model, inner.x, inner.width);
     let scroll_y = directory_scroll(shell.cursor, &layout, inner.height);
 
@@ -1030,6 +1031,14 @@ fn draw_status_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
         spans.push(Span::styled(
             format!(" ▶PLAY ({} left) ", shell.replay_queue.len()),
             Style::default().fg(theme.success),
+        ));
+    }
+
+    // Focus mode indicator
+    if shell.focus_mode {
+        spans.push(Span::styled(
+            format!(" ◉FOCUS({}) ", shell.selected_set.len()),
+            Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
         ));
     }
 

@@ -139,6 +139,8 @@ pub struct Shell {
     pub search_cursor: usize,
     /// 多选的 handle 集合(Space 键 toggle)。
     pub selected_set: std::collections::HashSet<String>,
+    /// Focus 模式: 仅显示 selected_set 中的 agent(f 键 toggle)。
+    pub focus_mode: bool,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
@@ -191,6 +193,7 @@ impl Shell {
             note_viewing_handle: None,
             note_edit_buf: String::new(),
             selected_set: std::collections::HashSet::new(),
+            focus_mode: false,
             theme_name: "default".to_string(),
             generation: 0,
         }
