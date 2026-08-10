@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 11;
+const DB_VERSION: i64 = 12;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -221,7 +221,13 @@ impl Db {
                 created_at INTEGER NOT NULL
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '11');
+            CREATE TABLE IF NOT EXISTS hotkeys (
+                key        TEXT PRIMARY KEY,
+                command    TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '12');
             ",
         )
         .ok()?;
@@ -987,6 +993,49 @@ impl Db {
             });
         map
     }
+    // ──── Hotkeys ────
+
+    /// 保存/覆盖热键(幂等)。
+    pub fn upsert_hotkey(&self, key: &str, command: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let ts = crate::model::now_ms();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO hotkeys (key, command, created_at) VALUES (?1, ?2, ?3)",
+            params![key, command, ts],
+        );
+    }
+
+    /// 移除热键。
+    pub fn remove_hotkey(&self, key: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute("DELETE FROM hotkeys WHERE key = ?1", params![key]);
+    }
+
+    /// 加载所有热键 → key → command。
+    pub fn load_hotkeys(&self) -> std::collections::HashMap<String, String> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut stmt = match conn.prepare("SELECT key, command FROM hotkeys") {
+            Ok(s) => s,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let _ = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| {
+                for row in rows.flatten() {
+                    map.insert(row.0, row.1);
+                }
+            });
+        map
+    }
 
     // ──── Export/Import ────
 
@@ -1008,6 +1057,7 @@ impl Db {
             DELETE FROM saved_views;
             DELETE FROM agent_notes;
             DELETE FROM aliases;
+            DELETE FROM hotkeys;
             DELETE FROM config WHERE key != 'db_version';
         ");
     }
@@ -1057,7 +1107,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("11".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("12".to_string()));
     }
 
     #[test]

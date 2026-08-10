@@ -352,7 +352,10 @@ pub struct Model {
     pub notes: HashMap<String, String>,
     /// 命令别名: alias_name → expansion(持久化到 DB)。
     pub aliases: HashMap<String, String>,
+    /// 自定义热键: key_char → dispatch_input_text(持久化到 DB)。
+    pub hotkeys: HashMap<String, String>,
 }
+
 
 impl Model {
     pub fn new() -> Self {
@@ -376,6 +379,7 @@ impl Model {
             config: HashMap::new(),
             pinned: HashSet::new(),
             aliases: HashMap::new(),
+            hotkeys: HashMap::new(),
         }
     }
 
@@ -691,6 +695,29 @@ impl Model {
     /// 启动时从 DB 加载别名(替换)。
     pub fn apply_aliases(&mut self, aliases: HashMap<String, String>) {
         self.aliases = aliases;
+    }
+    // ──── Hotkeys(自定义热键)────
+
+    /// 保存/覆盖热键绑定。
+    pub fn add_hotkey(&mut self, key: &str, command: &str) {
+        self.hotkeys.insert(key.to_string(), command.to_string());
+        self.generation += 1;
+    }
+
+    /// 移除热键绑定。
+    pub fn remove_hotkey(&mut self, key: &str) {
+        self.hotkeys.remove(key);
+        self.generation += 1;
+    }
+
+    /// 获取热键绑定。
+    pub fn get_hotkey(&self, key: &str) -> Option<&String> {
+        self.hotkeys.get(key)
+    }
+
+    /// 启动时从 DB 加载热键(替换)。
+    pub fn apply_hotkeys(&mut self, hotkeys: HashMap<String, String>) {
+        self.hotkeys = hotkeys;
     }
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
     pub fn push_history(&mut self, text: String) {
@@ -1735,4 +1762,5 @@ pub struct ExportBundle {
     pub alert_rules: Vec<AlertRule>,
     pub notes: HashMap<String, String>,
     pub aliases: HashMap<String, String>,
+    pub hotkeys: HashMap<String, String>,
 }

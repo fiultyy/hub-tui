@@ -148,6 +148,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.alias_overlay_active {
         draw_alias_overlay(f, model, shell, area, &theme);
     }
+    // Hotkeys 浮层
+    if shell.hotkeys_overlay_active {
+        draw_hotkeys_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -2445,6 +2449,65 @@ fn draw_alias_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, t
     f.render_widget(Clear, overlay_area);
 
     let title = " Aliases (Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+// ───────────────────────── Hotkeys 浮层 ─────────────────────────
+
+/// Hotkeys overlay: sorted alphabetically, shows key → command pairs, scrollable.
+fn draw_hotkeys_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    let mut keys: Vec<&String> = model.hotkeys.keys().collect();
+    keys.sort();
+
+    let lines: Vec<Line> = if keys.is_empty() {
+        vec![Line::from(Span::styled(
+            " No hotkeys bound. Use 'hotkey:key command' to bind one.",
+            Style::default().fg(theme.muted),
+        ))]
+    } else {
+        keys.iter().map(|key| {
+            let cmd = &model.hotkeys[*key];
+            Line::from(vec![
+                Span::styled(format!(" {key}"), Style::default().fg(theme.accent)),
+                Span::styled(format!(" → {cmd}"), Style::default().fg(theme.fg)),
+            ])
+        }).collect()
+    };
+
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(50);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Hotkeys (Esc:close) ";
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))

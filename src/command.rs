@@ -315,6 +315,11 @@ pub fn builtin_commands() -> Vec<Command> {
             "Create a command alias (enters input mode: alias:name expansion)",
             add_alias_input,
         ),
+        Command::new(
+            "bind hotkey",
+            "Bind a custom hotkey to a command (enters input mode: hotkey:key command)",
+            bind_hotkey_input,
+        ),
     ]
 }
 
@@ -631,6 +636,13 @@ fn add_alias_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.insert_mode = true;
     shell.focus = crate::shell::FocusTarget::Input;
     shell.input_buf = "alias:".to_string();
+    vec![]
+}
+
+fn bind_hotkey_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "hotkey:".to_string();
     vec![]
 }
 

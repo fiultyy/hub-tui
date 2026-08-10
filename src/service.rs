@@ -365,6 +365,7 @@ impl Service {
                             for r in &bundle.alert_rules { db.upsert_alert_rule(r.rule_type.as_str(), &r.value); }
                             for (h, note) in &bundle.notes { db.upsert_note(h, note); }
                             for (n, e) in &bundle.aliases { db.upsert_alias(n, e); }
+                            for (k, c) in &bundle.hotkeys { db.upsert_hotkey(k, c); }
                         }
                         let _ = tx.send(AppMsg::ImportOk { path, bundle });
                     });
@@ -377,6 +378,16 @@ impl Service {
                 crate::update::Cmd::RemoveAlias { name } => {
                     if let Some(db) = &self.db {
                         db.remove_alias(&name);
+                    }
+                }
+                crate::update::Cmd::PersistHotkey { key, command } => {
+                    if let Some(db) = &self.db {
+                        db.upsert_hotkey(&key, &command);
+                    }
+                }
+                crate::update::Cmd::RemoveHotkey { key } => {
+                    if let Some(db) = &self.db {
+                        db.remove_hotkey(&key);
                     }
                 }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {

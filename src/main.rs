@@ -82,6 +82,8 @@ fn main() -> io::Result<()> {
         mdl.apply_notes(notes);
         let aliases = svc.db.as_ref().map(|db| db.load_aliases()).unwrap_or_default();
         mdl.apply_aliases(aliases);
+        let hotkeys = svc.db.as_ref().map(|db| db.load_hotkeys()).unwrap_or_default();
+        mdl.apply_hotkeys(hotkeys);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 

@@ -108,6 +108,10 @@ pub enum Cmd {
     PersistAlias { name: String, expansion: String },
     /// 移除命令别名。
     RemoveAlias { name: String },
+    /// 持久化热键到 DB。
+    PersistHotkey { key: String, command: String },
+    /// 移除热键。
+    RemoveHotkey { key: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -405,10 +409,11 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             model.alert_rules = bundle.alert_rules.clone();
             model.apply_notes(bundle.notes.clone());
             model.apply_aliases(bundle.aliases.clone());
+            model.apply_hotkeys(bundle.hotkeys.clone());
             model.generation += 1;
             let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
                 + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
-                + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len();
+                + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len();
             shell.push_toast(format!("✓ imported {count} items from {path}"));
             vec![]
         }
@@ -447,7 +452,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.filter_active {
         return handle_filter_key(model, shell, k);
     }
-    // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config / alias_overlay),键盘走浮层处理
+    // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config / alias_overlay / hotkeys),键盘走浮层处理
     if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
@@ -605,6 +610,13 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             return vec![];
         }
 
+        // r: hotkeys overlay (toggle)
+        (KeyCode::Char('r'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.hotkeys_overlay_active = !shell.hotkeys_overlay_active;
+            if shell.hotkeys_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+
         // f: focus mode toggle (show only selected_set agents)
         (KeyCode::Char('f'), KeyModifiers::NONE) if !shell.insert_mode => {
             if shell.selected_set.is_empty() {
@@ -682,6 +694,17 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
 
         _ => {}
     }
+
+    // Custom hotkey dispatch (after all built-in bindings, before normal key handling)
+    if !shell.insert_mode {
+        if let KeyCode::Char(c) = k.code {
+            let key_str = c.to_string();
+            if let Some(cmd_text) = model.get_hotkey(&key_str).cloned() {
+                return dispatch_input(model, shell, cmd_text);
+            }
+        }
+    }
+
 
     // insert_mode: 输入模式处理
     if shell.insert_mode {
@@ -1406,10 +1429,11 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             alert_rules: model.alert_rules.clone(),
             notes: model.notes.clone(),
             aliases: model.aliases.clone(),
+            hotkeys: model.hotkeys.clone(),
         };
         let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
             + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
-            + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len();
+            + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len();
         shell.push_toast(format!("exporting {count} items to {path}…"));
         return vec![Cmd::ExportSettings { path, bundle }];
     }
@@ -1445,6 +1469,33 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         shell.push_toast("alias: usage: alias:<name> <expansion> | alias:rm:<name>".into());
         return vec![];
     }
+
+    // hotkey:<key> <command> / hotkey:rm:<key>
+    if let Some(rest) = buf.strip_prefix("hotkey:") {
+        if let Some(key) = rest.strip_prefix("rm:") {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                model.remove_hotkey(&key);
+                shell.push_toast(format!("hotkey removed: {key}"));
+                return vec![Cmd::RemoveHotkey { key }];
+            }
+            return vec![];
+        }
+        if let Some((key, command)) = rest.split_once(' ') {
+            let key = key.trim().to_string();
+            let command = command.trim().to_string();
+            if key.len() == 1 && !command.is_empty() {
+                model.add_hotkey(&key, &command);
+                shell.push_toast(format!("hotkey saved: {key} → {command}"));
+                return vec![Cmd::PersistHotkey { key, command }];
+            } else if key.len() != 1 {
+                shell.push_toast("hotkey: key must be a single character".into());
+            }
+        }
+        shell.push_toast("hotkey: usage: hotkey:<key> <command> | hotkey:rm:<key>".into());
+        return vec![];
+    }
+
 
     vec![]
 }
@@ -1810,6 +1861,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.metrics_overlay_active = false;
             shell.quick_actions_active = false;
             shell.alias_overlay_active = false;
+            shell.hotkeys_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
