@@ -250,6 +250,11 @@ pub fn builtin_commands() -> Vec<Command> {
             "Search across all data sources — agents, messages, events, history (Ctrl-S)",
             open_search,
         ),
+        Command::new(
+            "dashboard",
+            "Open dashboard overlay — live aggregate stats (D)",
+            show_dashboard,
+        ),
     ]
 }
 
@@ -476,6 +481,12 @@ fn open_search(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.search_active = true;
     shell.search_query.clear();
     shell.search_cursor = 0;
+    vec![]
+}
+
+fn show_dashboard(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.dashboard_active = true;
+    shell.overlay_scroll = 0;
     vec![]
 }
 fn show_history(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {

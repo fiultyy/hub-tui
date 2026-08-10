@@ -346,7 +346,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -402,6 +402,15 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('H'), KeyModifiers::SHIFT) if !shell.insert_mode => {
             shell.history_overlay_active = !shell.history_overlay_active;
             if shell.history_overlay_active {
+                shell.overlay_scroll = 0;
+            }
+            return vec![];
+        }
+
+        // D(Shift+d): dashboard overlay — 排除 Messages tab(D=clear-all)
+        (KeyCode::Char('D'), KeyModifiers::SHIFT) if !shell.insert_mode && shell.tab != Tab::Messages => {
+            shell.dashboard_active = !shell.dashboard_active;
+            if shell.dashboard_active {
                 shell.overlay_scroll = 0;
             }
             return vec![];
@@ -1153,6 +1162,7 @@ fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
 fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     match (k.code, k.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
+            shell.dashboard_active = false;
             shell.overlay_content = None;
             shell.overlay_scroll = 0;
             shell.worktree_ps_active = false;
@@ -1844,5 +1854,18 @@ mod tests {
         let cmds2 = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('@'))));
         assert!(!model.is_pinned("term_test"));
         assert!(cmds2.iter().any(|c| matches!(c, Cmd::PersistPinRemove { .. })));
+    }
+
+    #[test]
+    fn dashboard_toggle_test() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        // D key (Shift+d) opens dashboard (Directory tab)
+        shell.tab = Tab::Directory;
+        let _ = update(&mut model, &mut shell, AppMsg::Key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)));
+        assert!(shell.dashboard_active);
+        // Esc closes
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Esc)));
+        assert!(!shell.dashboard_active);
     }
 }

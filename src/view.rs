@@ -113,6 +113,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.search_active {
         draw_search_overlay(f, model, shell, area, &theme);
     }
+    // Dashboard 浮层(D 键激活)
+    if shell.dashboard_active {
+        draw_dashboard_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -988,6 +992,7 @@ fn status_hint(shell: &Shell) -> String {
         || shell.history_overlay_active
         || shell.activity_active
         || shell.search_active
+        || shell.dashboard_active
     {
         return " Esc/q:close j/k:scroll c:clear ".to_string();
     }
@@ -1684,6 +1689,89 @@ fn draw_activity_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect
     let visible: Vec<Line> = lines[start..end].to_vec();
     f.render_widget(Paragraph::new(visible), inner);
 }
+/// Dashboard 浮层: 聚合统计视图, 可滚动。
+fn draw_dashboard_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+    let snap = crate::model::compute_snapshot(model);
+    let mut lines: Vec<Line> = Vec::new();
+
+    // 📊 Agents section
+    lines.push(Line::from(Span::styled("📊 Agents", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+    let mut status_spans: Vec<Span> = vec![Span::styled(format!("  Total: {}  ", snap.agent_total), Style::default().fg(theme.fg))];
+    for (cat, count) in &snap.status_counts {
+        let color = match cat {
+            crate::model::StatusCategory::Working => theme.working,
+            crate::model::StatusCategory::Error => theme.error,
+            crate::model::StatusCategory::Done => theme.idle,
+            _ => theme.muted,
+        };
+        status_spans.push(Span::styled(format!("{} {}: {}  ", cat.icon(), cat.label(), count), Style::default().fg(color)));
+    }
+    lines.push(Line::from(status_spans));
+    lines.push(Line::from(""));
+
+    // 🏷 Sources section
+    lines.push(Line::from(Span::styled("🏷 Sources", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+    let mut sorted_sources: Vec<_> = snap.source_counts.iter().collect();
+    sorted_sources.sort_by(|a, b| b.1.cmp(a.1));
+    let src_line = if sorted_sources.is_empty() {
+        Line::from(Span::styled("  (none)", Style::default().fg(theme.muted)))
+    } else {
+        Line::from(sorted_sources.iter().map(|(src, cnt)| {
+            Span::styled(format!("  {}: {} ", src, cnt), Style::default().fg(theme.fg))
+        }).collect::<Vec<_>>())
+    };
+    lines.push(src_line);
+    lines.push(Line::from(""));
+
+    // ✉ Messages section
+    lines.push(Line::from(Span::styled("✉ Messages", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  Total: {}  ", snap.message_total), Style::default().fg(theme.fg)),
+        Span::styled(format!("Unread: {}", snap.message_unread), Style::default().fg(if snap.message_unread > 0 { theme.warn } else { theme.muted })),
+    ]));
+    lines.push(Line::from(""));
+
+    // ⚡ Events section
+    lines.push(Line::from(Span::styled("⚡ Events", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  Total: {}  ", snap.event_total), Style::default().fg(theme.fg)),
+        Span::styled(format!("· Info: {}  ", snap.event_by_severity[0].1), Style::default().fg(theme.muted)),
+        Span::styled(format!("⚠ Warn: {}  ", snap.event_by_severity[1].1), Style::default().fg(theme.warn)),
+        Span::styled(format!("✖ Error: {}", snap.event_by_severity[2].1), Style::default().fg(theme.error)),
+    ]));
+    lines.push(Line::from(Span::styled(format!("  Rate: {} events/60s", snap.event_recent_60s), Style::default().fg(theme.muted))));
+    lines.push(Line::from(""));
+
+    // Summary row: 📌 👥 ⌘
+    lines.push(Line::from(vec![
+        Span::styled("📌 Pinned: ", Style::default().fg(theme.accent)),
+        Span::styled(format!("{}  ", snap.pinned_count), Style::default().fg(theme.fg)),
+        Span::styled("👥 Groups: ", Style::default().fg(theme.accent)),
+        Span::styled(format!("{}  ", snap.group_count), Style::default().fg(theme.fg)),
+        Span::styled("⌘ History: ", Style::default().fg(theme.accent)),
+        Span::styled(format!("{}", snap.history_count), Style::default().fg(theme.fg)),
+    ]));
+
+    // 尺寸 + 居中(同 activity overlay)
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+    f.render_widget(Clear, overlay_area);
+    let title = " Dashboard (j/k:scroll Esc:close) ";
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(title, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
 /// 命令历史浮层: 最新在前, prefix 着色, 可滚动, Enter 编辑选中项。
 fn draw_history_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     use ratatui::widgets::{Borders, Clear};

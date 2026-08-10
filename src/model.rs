@@ -998,3 +998,95 @@ pub fn global_search(model: &Model, query: &str) -> Vec<SearchResult> {
 
     results
 }
+
+// ───────────────────────── Dashboard 仪表盘 ─────────────────────────
+
+/// Dashboard 聚合快照。纯计算投影, 从 &Model 单次遍历得出。
+#[derive(Debug, Clone)]
+pub struct ModelSnapshot {
+    pub agent_total: usize,
+    /// 6 槽位, 对齐 StatusCategory 判别值顺序 (Working=0 .. Unknown=5)。
+    pub status_counts: [(StatusCategory, usize); 6],
+    /// source 字符串 → agent 计数。
+    pub source_counts: HashMap<String, usize>,
+    pub message_total: usize,
+    /// read == 0 的消息数。
+    pub message_unread: usize,
+    pub event_total: usize,
+    /// 3 槽位: [("Info",n), ("Warn",n), ("Error",n)]。
+    pub event_by_severity: [(String, usize); 3],
+    /// EventCategory::as_str() → 计数。
+    pub event_by_category: HashMap<String, usize>,
+    pub group_count: usize,
+    pub pinned_count: usize,
+    pub history_count: usize,
+    /// 最近 60 秒事件数(活跃度指标)。
+    pub event_recent_60s: usize,
+    pub computed_at_ms: i64,
+}
+
+/// 计算 Dashboard 快照。纯计算, 无 IO。
+pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
+    let computed_at_ms = now_ms();
+    let cutoff_60s = computed_at_ms - 60_000;
+
+    let mut status_counts: [(StatusCategory, usize); 6] = [
+        (StatusCategory::Working, 0),
+        (StatusCategory::Waiting, 0),
+        (StatusCategory::Blocked, 0),
+        (StatusCategory::Error, 0),
+        (StatusCategory::Done, 0),
+        (StatusCategory::Unknown, 0),
+    ];
+    let mut source_counts: HashMap<String, usize> = HashMap::new();
+    let mut pinned_in_dir: usize = 0;
+
+    for agent in model.directory.values() {
+        let cat = StatusCategory::from_agent(agent);
+        status_counts[cat as usize].1 += 1;
+        let src = agent.source.as_deref().unwrap_or("unknown");
+        *source_counts.entry(src.to_string()).or_insert(0) += 1;
+        if model.pinned.contains(&agent.handle) {
+            pinned_in_dir += 1;
+        }
+    }
+
+    let message_total = model.messages.len();
+    let message_unread = model.messages.iter().filter(|m| m.read == 0).count();
+
+    let mut sev_counts: [usize; 3] = [0, 0, 0];
+    let mut event_by_category: HashMap<String, usize> = HashMap::new();
+    let mut event_recent_60s: usize = 0;
+    for ev in &model.events {
+        let sev_idx = match ev.severity {
+            EventSeverity::Info => 0,
+            EventSeverity::Warn => 1,
+            EventSeverity::Error => 2,
+        };
+        sev_counts[sev_idx] += 1;
+        *event_by_category.entry(ev.category.as_str().to_string()).or_insert(0) += 1;
+        if ev.timestamp_ms > cutoff_60s {
+            event_recent_60s += 1;
+        }
+    }
+
+    ModelSnapshot {
+        agent_total: model.directory.len(),
+        status_counts,
+        source_counts,
+        message_total,
+        message_unread,
+        event_total: model.events.len(),
+        event_by_severity: [
+            ("Info".to_string(), sev_counts[0]),
+            ("Warn".to_string(), sev_counts[1]),
+            ("Error".to_string(), sev_counts[2]),
+        ],
+        event_by_category,
+        group_count: model.groups.len(),
+        pinned_count: pinned_in_dir,
+        history_count: model.history.len(),
+        event_recent_60s,
+        computed_at_ms,
+    }
+}

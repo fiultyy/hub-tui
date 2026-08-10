@@ -103,6 +103,8 @@ pub struct Shell {
     pub saved_input: String,
     /// 命令历史浮层激活(H 键)。
     pub history_overlay_active: bool,
+    /// Dashboard 浮层激活(D 键)。
+    pub dashboard_active: bool,
     /// 全局搜索浮层激活(Ctrl-S)。
     pub search_active: bool,
     /// 搜索查询输入。
@@ -134,6 +136,7 @@ impl Shell {
             palette_cursor: 0,
             filter_active: false,
             filter_query: None,
+            dashboard_active: false,
             overlay_content: None,
             overlay_scroll: 0,
             search_active: false,
