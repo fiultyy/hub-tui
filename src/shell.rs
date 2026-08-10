@@ -5,7 +5,6 @@
 
 use std::time::Instant;
 
-/// 顶部 TabBar 选中项。Tab 键 / 1-3 数字键切换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Directory,
@@ -72,8 +71,17 @@ pub struct Shell {
     pub input_buf: String,
     /// 终端尺寸 (width, height)。
     pub size: (u16, u16),
-    /// toast 通知队列: (消息, 创建时刻)。
     pub toasts: Vec<(String, Instant)>,
+    /// 命令面板激活(Ctrl-P)。
+    pub palette_active: bool,
+    /// 命令面板查询输入。
+    pub palette_query: String,
+    /// 命令面板选中索引。
+    pub palette_cursor: usize,
+    /// 过滤模式激活(Directory tab 按 / 进入)。
+    pub filter_active: bool,
+    /// 过滤查询(source:claude / state:working / 自由文本)。
+    pub filter_query: Option<String>,
     /// generation guard(范式 3: 防陈旧回调)。
     generation: u64,
 }
@@ -90,6 +98,11 @@ impl Shell {
             input_buf: String::new(),
             size: (80, 24),
             toasts: Vec::new(),
+            palette_active: false,
+            palette_query: String::new(),
+            palette_cursor: 0,
+            filter_active: false,
+            filter_query: None,
             generation: 0,
         }
     }

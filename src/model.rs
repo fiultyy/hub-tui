@@ -349,3 +349,53 @@ pub fn directory_sorted_handles(directory: &HashMap<String, Agent>) -> Vec<Strin
         .map(|a| a.handle.clone())
         .collect()
 }
+
+/// 从 sorted handles 中过滤出匹配 query 的 handles。
+/// 支持命名空间前缀: source:claude / state:working / cwd:~/.orca
+/// 无前缀 = 跨维度模糊匹配(title/source/state/cwd)。
+pub fn directory_filter_handles(
+    sorted: &[String],
+    directory: &HashMap<String, Agent>,
+    query: &str,
+) -> Vec<String> {
+    if query.is_empty() {
+        return sorted.to_vec();
+    }
+    let query = query.trim();
+    // 解析命名空间前缀
+    let (field, value) = if let Some((f, v)) = query.split_once(':') {
+        (Some(f), v)
+    } else {
+        (None, query)
+    };
+    let value_lower = value.to_ascii_lowercase();
+
+    sorted
+        .iter()
+        .filter(|h| {
+            let agent = match directory.get(*h) {
+                Some(a) => a,
+                None => return false,
+            };
+            let target = match field {
+                Some("source") => agent.source.as_deref().unwrap_or(""),
+                Some("state") => agent.effective_state(),
+                Some("cwd") | Some("path") | Some("worktree") => &agent.cwd,
+                Some("title") => agent.title.as_deref().unwrap_or(""),
+                _ => {
+                    // 无前缀: 跨维度模糊匹配
+                    let combined = format!(
+                        "{} {} {} {}",
+                        agent.title.as_deref().unwrap_or(""),
+                        agent.source.as_deref().unwrap_or(""),
+                        agent.effective_state(),
+                        agent.cwd,
+                    );
+                    return crate::command::fuzzy_match(value, &combined);
+                }
+            };
+            target.to_ascii_lowercase().contains(&value_lower)
+        })
+        .cloned()
+        .collect()
+}

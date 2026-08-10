@@ -65,6 +65,16 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
         ));
         f.render_widget(toast, toast_area);
     }
+
+    // 命令面板浮层(Ctrl-P 激活时覆盖在主内容上方)
+    if shell.palette_active {
+        draw_command_palette(f, shell, area, &theme);
+    }
+
+    // 过滤指示器(Directory tab 过滤模式)
+    if shell.filter_active {
+        draw_filter_indicator(f, shell, outer[2], &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -273,7 +283,13 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
         return;
     }
 
-    let sorted = directory_sorted_handles(&model.directory);
+    let sorted = if shell.filter_active {
+        let q = shell.filter_query.as_deref().unwrap_or("");
+        let full = directory_sorted_handles(&model.directory);
+        crate::model::directory_filter_handles(&full, &model.directory, q)
+    } else {
+        directory_sorted_handles(&model.directory)
+    };
     let layout = directory_layout(&sorted, model, inner.x, inner.width);
     let scroll_y = directory_scroll(shell.cursor, &layout, inner.height);
 
@@ -769,6 +785,101 @@ fn draw_status_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
 fn spinner_char(frame: usize) -> char {
     const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     FRAMES[frame % FRAMES.len()]
+}
+
+// ───────────────────────── 命令面板浮层 ─────────────────────────
+
+/// 命令面板: 居中浮层 + 输入框 + 过滤列表 + 选择高亮。
+fn draw_command_palette(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
+    use unicode_width::UnicodeWidthStr;
+
+    let commands = crate::command::filter_commands(&shell.palette_query);
+    let list_h = commands.len().min(10) as u16;
+    let palette_h = 1 + 1 + list_h + 1; // border(1) + input(1) + list + border(1)
+    let palette_w = (area.width / 2).max(40).min(60);
+    let palette_x = area.x + (area.width - palette_w) / 2;
+    let palette_y = area.y + 2;
+
+    // 半透明背景(用 Clear + 纯色覆盖)
+    let bg_area = Rect {
+        x: palette_x.saturating_sub(1),
+        y: palette_y.saturating_sub(1),
+        width: palette_w + 2,
+        height: palette_h + 2,
+    };
+    f.render_widget(ratatui::widgets::Clear, bg_area);
+    let bg = ratatui::widgets::Block::default()
+        .style(Style::default().bg(theme.bg));
+    f.render_widget(bg, bg_area);
+
+    // border
+    let border = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " Command Palette (Esc: close) ",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = border.inner(Rect {
+        x: palette_x.saturating_sub(1),
+        y: palette_y.saturating_sub(1),
+        width: palette_w + 2,
+        height: palette_h + 2,
+    });
+    f.render_widget(border, Rect {
+        x: palette_x.saturating_sub(1),
+        y: palette_y.saturating_sub(1),
+        width: palette_w + 2,
+        height: palette_h + 2,
+    });
+
+    // 输入行: > query
+    let input_line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(&shell.palette_query, Style::default().fg(theme.fg)),
+        Span::styled(" ", Style::default().fg(theme.fg)),
+    ]);
+    f.render_widget(
+        Paragraph::new(input_line),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+    );
+
+    // 命令列表
+    for (i, cmd) in commands.iter().enumerate().take(10) {
+        let selected = i == shell.palette_cursor;
+        let style = if selected {
+            Style::default().fg(theme.bg).bg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        let line = Line::from(vec![
+            Span::styled(format!("  {} ", cmd.name), style),
+            Span::styled(
+                crate::render::truncate_width(cmd.description, inner.width as usize - cmd.name.len() - 4),
+                if selected { style } else { Style::default().fg(theme.muted) },
+            ),
+        ]);
+        f.render_widget(
+            Paragraph::new(line),
+            Rect { x: inner.x, y: inner.y + 1 + i as u16, width: inner.width, height: 1 },
+        );
+    }
+}
+
+// ───────────────────────── 过滤指示器 ─────────────────────────
+
+/// 过滤模式指示器: 替换 input_bar 显示过滤查询。
+fn draw_filter_indicator(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
+    let query = shell.filter_query.as_deref().unwrap_or("");
+    let line = Line::from(vec![
+        Span::styled("/filter ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(query, Style::default().fg(theme.fg)),
+        Span::styled(
+            "  (Esc: close, Enter: confirm)",
+            Style::default().fg(theme.muted),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 #[cfg(test)]

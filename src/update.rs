@@ -166,9 +166,33 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
 /// 键盘处理。全局快捷键优先(q/Ctrl+C 退出, Tab 切 tab), 其余按 insert_mode 分流。
 fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
-    // 全局快捷键(不受 insert_mode 影响)
+    // 命令面板激活时,所有键盘事件走面板处理
+    if shell.palette_active {
+        return handle_palette_key(model, shell, k);
+    }
+    // 过滤模式激活时,键盘事件走过滤输入处理
+    if shell.filter_active {
+        return handle_filter_key(model, shell, k);
+    }
+
     match (k.code, k.modifiers) {
-        // 退出
+        // Ctrl-P 或 : 打开命令面板
+        (KeyCode::Char('p'), KeyModifiers::CONTROL) | (KeyCode::Char(':'), KeyModifiers::NONE) => {
+            shell.palette_active = true;
+            shell.palette_query.clear();
+            shell.palette_cursor = 0;
+            return vec![];
+        }
+
+        // / 进入过滤模式(Directory tab)
+        (KeyCode::Char('/'), KeyModifiers::NONE)
+            if !shell.insert_mode && shell.tab == Tab::Directory =>
+        {
+            shell.filter_active = true;
+            shell.filter_query = Some(String::new());
+            return vec![];
+        }
+
         (KeyCode::Char('q'), KeyModifiers::NONE) if !shell.insert_mode => {
             return vec![Cmd::Quit];
         }
@@ -345,6 +369,97 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
     }
 }
 
+// ───────────────────────── 命令面板键盘处理 ─────────────────────────
+
+/// 命令面板键盘: 输入过滤, j/k/↑↓ 导航, Enter 执行, Esc 关闭。
+fn handle_palette_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+    match (k.code, k.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => {
+            shell.palette_active = false;
+            shell.palette_query.clear();
+            shell.palette_cursor = 0;
+            vec![]
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            let cmds_filtered = crate::command::filter_commands(&shell.palette_query);
+            if let Some(cmd) = cmds_filtered.get(shell.palette_cursor) {
+                let handler = cmd.handler;
+                let result = handler(model, shell);
+                shell.palette_active = false;
+                shell.palette_query.clear();
+                shell.palette_cursor = 0;
+                return result;
+            }
+            vec![]
+        }
+        (KeyCode::Down, KeyModifiers::NONE) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+            let len = crate::command::filter_commands(&shell.palette_query).len();
+            if shell.palette_cursor + 1 < len {
+                shell.palette_cursor += 1;
+            }
+            vec![]
+        }
+        (KeyCode::Up, KeyModifiers::NONE) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            shell.palette_cursor = shell.palette_cursor.saturating_sub(1);
+            vec![]
+        }
+        (KeyCode::Backspace, KeyModifiers::NONE) => {
+            shell.palette_query.pop();
+            shell.palette_cursor = 0;
+            vec![]
+        }
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            shell.palette_query.push(c);
+            shell.palette_cursor = 0;
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
+// ───────────────────────── 过滤模式键盘处理 ─────────────────────────
+
+/// 过滤模式键盘: 输入查询, Esc 退出, Enter 选中第一个结果。
+fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+    match (k.code, k.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => {
+            shell.filter_active = false;
+            shell.filter_query = None;
+            shell.cursor = 0;
+            vec![]
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            // 退出过滤模式,保留 cursor 在当前选中项
+            shell.filter_active = false;
+            vec![]
+        }
+        (KeyCode::Backspace, KeyModifiers::NONE) => {
+            if let Some(q) = shell.filter_query.as_mut() {
+                q.pop();
+            }
+            shell.cursor = 0;
+            vec![]
+        }
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            if let Some(q) = shell.filter_query.as_mut() {
+                q.push(c);
+            }
+            shell.cursor = 0;
+            vec![]
+        }
+        // 过滤模式下仍允许 j/k 导航
+        (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
+            shell.cursor += 1;
+            vec![]
+        }
+        (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
+            shell.cursor = shell.cursor.saturating_sub(1);
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
 // ───────────────────────── 辅助 ─────────────────────────
 
 /// 当前 tab 对应的列表长度(用于 cursor 边界)。
@@ -353,7 +468,17 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
 fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String]> {
     match shell.tab {
         Tab::Directory => {
-            std::borrow::Cow::Owned(directory_sorted_handles(&model.directory))
+            let sorted = directory_sorted_handles(&model.directory);
+            if shell.filter_active {
+                let q = shell.filter_query.as_deref().unwrap_or("");
+                std::borrow::Cow::Owned(crate::model::directory_filter_handles(
+                    &sorted,
+                    &model.directory,
+                    q,
+                ))
+            } else {
+                std::borrow::Cow::Owned(sorted)
+            }
         }
         Tab::Groups => std::borrow::Cow::Owned(
             model.groups.keys().cloned().collect::<Vec<_>>(),
@@ -364,15 +489,20 @@ fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String
     }
 }
 
-/// 当前选中 agent 的 handle(用于发送)。
-/// Directory tab: 按 directory_sorted_handles 排序(与 cursor 索引一致)。
+/// 当前选中 agent 的 handle(用于发送)。pub 供 command.rs 使用。
+pub fn selected_agent_handle_public(model: &Model, shell: &Shell) -> Option<String> {
+    selected_agent_handle(model, shell)
+}
+
 fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
-    match shell.tab {
-        Tab::Directory => directory_sorted_handles(&model.directory)
-            .get(shell.cursor)
-            .cloned(),
-        _ => None,
-    }
+    let handles: Vec<String> = if shell.filter_active && shell.tab == Tab::Directory {
+        let q = shell.filter_query.as_deref().unwrap_or("");
+        let sorted = directory_sorted_handles(&model.directory);
+        crate::model::directory_filter_handles(&sorted, &model.directory, q)
+    } else {
+        directory_sorted_handles(&model.directory)
+    };
+    handles.get(shell.cursor).cloned()
 }
 
 /// 鼠标点击命中测试: (x, y) 是否落在某个 agent card 上,返回 sorted index。

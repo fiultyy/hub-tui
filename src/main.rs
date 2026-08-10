@@ -7,6 +7,7 @@
 //! - ADR-5: 数据源 = orca-ide terminal list + last-status.json watch
 //! - ADR-6: 双通道发现 (hub-directory.json + socket)
 //! - ADR-7: send 幂等回灌
+mod command;
 mod db;
 mod msg;
 mod model;
