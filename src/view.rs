@@ -464,30 +464,19 @@ fn draw_agent_card(
         Span::styled(" ".repeat(avail.saturating_sub(indent + prompt_w)), bg_style),
     ]);
 
-    // ── row 2: 📁 cwd  🔧 toolName ──
-    let home = std::env::var("HOME").unwrap_or_default();
-    let cwd_display = if agent.cwd.is_empty() {
-        "(global)".to_string()
-    } else if !home.is_empty() && agent.cwd.starts_with(&home) {
-        format!("~{}", &agent.cwd[home.len()..])
-    } else {
-        agent.cwd.clone()
-    };
+    // ── row 2: 🔧 toolName(worktreePath 已在分区标题显示) ──
     let tool = agent.tool_name.as_deref().unwrap_or("");
     let tool_part = if !tool.is_empty() {
-        format!(" \u{1f527}{}", tool)
+        format!("\u{1f527}{}", tool)
     } else {
         String::new()
     };
-    let cwd_max = avail.saturating_sub(indent + 1 + UnicodeWidthStr::width(tool_part.as_str()));
-    let cwd_str = crate::render::truncate_width(&format!("\u{1f4c1}{}", cwd_display), cwd_max);
-    let content_w = UnicodeWidthStr::width(cwd_str.as_str()) + UnicodeWidthStr::width(tool_part.as_str());
+    let tool_w = UnicodeWidthStr::width(tool_part.as_str());
     let row2 = Line::from(vec![
         Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(cwd_str, Style::default().fg(theme.muted).bg(cs.bg)),
         Span::styled(tool_part, Style::default().fg(theme.accent).bg(cs.bg)),
-        Span::styled(" ".repeat(avail.saturating_sub(indent + content_w)), bg_style),
+        Span::styled(" ".repeat(avail.saturating_sub(indent + tool_w)), bg_style),
     ]);
 
     // ── row 3: ⠋ source · state (branch)  ⏱ elapsed ──
