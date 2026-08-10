@@ -201,34 +201,39 @@ fn draw_agent_card(
 
     // 先 Clear 再填色块,确保干净
     f.render_widget(ratatui::widgets::Clear, area);
+    let avail = area.width as usize;
 
-    // line 1: 连接灯 + handle + title
-    let conn_span = Span::styled(
-        if agent.connected { "● " } else { "○ " },
-        Style::default()
-            .fg(if agent.connected { theme.success } else { theme.muted })
-            .bg(bg),
-    );
+    // line 1: 连接灯 + handle + right-aligned title
+    use unicode_width::UnicodeWidthStr;
+    let conn_str = if agent.connected { "● " } else { "○ " };
+    let conn_w = 2usize;
     let handle_display = crate::render::truncate_width(&agent.handle, 22);
-    let handle_span = Span::styled(
-        handle_display,
-        Style::default().fg(if selected { theme.accent } else { theme.fg }).bg(bg),
-    );
+    let handle_w = UnicodeWidthStr::width(handle_display.as_str());
 
     let title_text = agent.title.as_deref().unwrap_or("").trim();
-    let handle_w = 2 + crate::render::truncate_width(&agent.handle, 22).len();
-    let avail = area.width as usize;
-    let title_trunc = if !title_text.is_empty() && avail > handle_w + 3 {
-        crate::render::truncate_width(title_text, avail.saturating_sub(handle_w + 2))
+    let remaining = avail.saturating_sub(conn_w + handle_w);
+    let title_trunc = if !title_text.is_empty() && remaining > 2 {
+        crate::render::truncate_width(title_text, remaining)
     } else {
         String::new()
     };
-    let title_w = title_trunc.chars().count();
-    let pad_w = avail.saturating_sub(handle_w + title_w);
-    let pad_span = Span::styled(" ".repeat(pad_w), bg_style);
-    let title_span = Span::styled(title_trunc, Style::default().fg(theme.muted).bg(bg));
+    let title_w = UnicodeWidthStr::width(title_trunc.as_str());
+    let pad_w = remaining.saturating_sub(title_w);
 
-    let line1 = Line::from(vec![conn_span, handle_span, pad_span, title_span]);
+    let line1 = Line::from(vec![
+        Span::styled(
+            conn_str,
+            Style::default()
+                .fg(if agent.connected { theme.success } else { theme.muted })
+                .bg(bg),
+        ),
+        Span::styled(
+            handle_display,
+            Style::default().fg(if selected { theme.accent } else { theme.fg }).bg(bg),
+        ),
+        Span::styled(" ".repeat(pad_w), bg_style),
+        Span::styled(title_trunc, Style::default().fg(theme.muted).bg(bg)),
+    ]);
 
     // line 2: cwd
     let home = std::env::var("HOME").unwrap_or_default();
