@@ -141,6 +141,10 @@ pub struct Shell {
     pub selected_set: std::collections::HashSet<String>,
     /// Focus 模式: 仅显示 selected_set 中的 agent(f 键 toggle)。
     pub focus_mode: bool,
+    /// Quick Actions 浮层激活(o 键)。
+    pub quick_actions_active: bool,
+    /// Quick Actions 选中索引。
+    pub quick_actions_cursor: usize,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
@@ -194,6 +198,8 @@ impl Shell {
             note_edit_buf: String::new(),
             selected_set: std::collections::HashSet::new(),
             focus_mode: false,
+            quick_actions_active: false,
+            quick_actions_cursor: 0,
             theme_name: "default".to_string(),
             generation: 0,
         }

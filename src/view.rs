@@ -140,6 +140,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.note_overlay_active {
         draw_note_overlay(f, model, shell, area, &theme);
     }
+    // Quick Actions 浮层(o 键激活)
+    if shell.quick_actions_active {
+        draw_quick_actions_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -2314,6 +2318,85 @@ fn draw_note_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, th
             .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(theme.fg))))
             .collect()
     };
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+// ───────────────────────── Quick Actions 浮层 ─────────────────────────
+
+/// Get the currently selected agent handle from directory view.
+fn current_directory_handle(model: &Model, shell: &Shell) -> Option<String> {
+    let sorted = if shell.filter_active {
+        let q = shell.filter_query.as_deref().unwrap_or("");
+        let full = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+        crate::model::directory_filter_handles(&full, &model.directory, q, &model.tags)
+    } else {
+        directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
+    };
+    let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
+    sorted.get(shell.cursor).cloned()
+}
+
+/// Quick Actions 浮层: 紧凑居中菜单, 9 个快捷操作。
+fn draw_quick_actions_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    let handle = match current_directory_handle(model, shell) {
+        Some(h) => h,
+        None => return,
+    };
+    let is_pinned = model.pinned.contains(&handle);
+
+    // 9 fixed menu items
+    let items: Vec<String> = vec![
+        "Send message".into(),
+        "Inject PTY".into(),
+        "Rename".into(),
+        "Add tag".into(),
+        "Add note".into(),
+        if is_pinned { "📌 Unpin".into() } else { "Pin".into() },
+        "Switch terminal".into(),
+        "Read output".into(),
+        "Close terminal".into(),
+    ];
+
+    // Compact centered overlay
+    let item_count = items.len();
+    let overlay_h = (item_count as u16 + 4).min(area.height.saturating_sub(4));
+    let overlay_w = 50u16.min(area.width.saturating_sub(8));
+    let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = format!(" Quick Actions — {} (o/Esc:close) ", handle);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(title, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    // Render items with ▸ selection highlight
+    let lines: Vec<Line> = items
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let selected = i == shell.quick_actions_cursor;
+            let prefix = if selected { "▸ " } else { "  " };
+            if selected {
+                Line::from(Span::styled(
+                    format!("{prefix}{label}"),
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    format!("{prefix}{label}"),
+                    Style::default().fg(theme.fg),
+                ))
+            }
+        })
+        .collect();
     f.render_widget(Paragraph::new(lines), inner);
 }
 

@@ -408,7 +408,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -543,6 +543,16 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
                 shell.note_viewing_handle = Some(handle.clone());
                 shell.note_edit_buf = model.get_note(&handle).cloned().unwrap_or_default();
                 shell.overlay_scroll = 0;
+            } else {
+                shell.push_toast("no agent selected".into());
+            }
+            return vec![];
+        }
+        // o: quick actions menu for current agent
+        (KeyCode::Char('o'), KeyModifiers::NONE) if !shell.insert_mode => {
+            if selected_agent_handle(model, shell).is_some() {
+                shell.quick_actions_active = !shell.quick_actions_active;
+                shell.quick_actions_cursor = 0;
             } else {
                 shell.push_toast("no agent selected".into());
             }
@@ -1598,6 +1608,73 @@ fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
 }
 
 fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+    // Quick actions overlay: highest priority, handles its own keys with early return
+    if shell.quick_actions_active {
+        return match (k.code, k.modifiers) {
+            (KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o'), _) => {
+                shell.quick_actions_active = false;
+                vec![]
+            }
+            (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                shell.quick_actions_cursor = (shell.quick_actions_cursor + 1) % 9;
+                vec![]
+            }
+            (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                shell.quick_actions_cursor = if shell.quick_actions_cursor == 0 { 8 } else { shell.quick_actions_cursor - 1 };
+                vec![]
+            }
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                shell.quick_actions_active = false;
+                let handle = match selected_agent_handle(model, shell) {
+                    Some(h) => h,
+                    None => return vec![],
+                };
+                match shell.quick_actions_cursor {
+                    0 => {
+                        shell.input_buf = format!("to:{handle} ");
+                        shell.insert_mode = true;
+                        shell.focus = FocusTarget::Input;
+                        vec![]
+                    }
+                    1 => {
+                        shell.input_buf = format!("pty:{handle} ");
+                        shell.insert_mode = true;
+                        shell.focus = FocusTarget::Input;
+                        vec![]
+                    }
+                    2 => {
+                        shell.input_buf = format!("rename:{handle} ");
+                        shell.insert_mode = true;
+                        shell.focus = FocusTarget::Input;
+                        vec![]
+                    }
+                    3 => {
+                        shell.input_buf = format!("tag:add:{handle} ");
+                        shell.insert_mode = true;
+                        shell.focus = FocusTarget::Input;
+                        vec![]
+                    }
+                    4 => {
+                        shell.note_overlay_active = true;
+                        shell.note_viewing_handle = Some(handle.clone());
+                        shell.note_edit_buf = model.get_note(&handle).cloned().unwrap_or_default();
+                        vec![]
+                    }
+                    5 => {
+                        model.toggle_pin(&handle);
+                        let pinned = model.is_pinned(&handle);
+                        shell.push_toast(if pinned { format!("📌 pinned: {handle}") } else { format!("unpinned: {handle}") });
+                        if pinned { vec![Cmd::PersistPinAdd { handle }] } else { vec![Cmd::PersistPinRemove { handle }] }
+                    }
+                    6 => vec![Cmd::SwitchTerminal { handle }],
+                    7 => vec![Cmd::ReadTerminal { handle }],
+                    8 => vec![Cmd::CloseTerminal { handle }],
+                    _ => vec![],
+                }
+            }
+            _ => vec![],
+        };
+    }
     match (k.code, k.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
             shell.dashboard_active = false;
@@ -1616,6 +1693,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.note_viewing_handle = None;
             shell.note_edit_buf.clear();
             shell.metrics_overlay_active = false;
+            shell.quick_actions_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
