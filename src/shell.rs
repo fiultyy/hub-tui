@@ -149,6 +149,8 @@ pub struct Shell {
     pub alias_overlay_active: bool,
     /// Hotkeys 浮层激活(r 键)。
     pub hotkeys_overlay_active: bool,
+    /// Theme customization 浮层激活(z 键)。
+    pub theme_overlay_active: bool,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
@@ -206,6 +208,7 @@ impl Shell {
             quick_actions_cursor: 0,
             alias_overlay_active: false,
             hotkeys_overlay_active: false,
+            theme_overlay_active: false,
             theme_name: "default".to_string(),
             generation: 0,
         }

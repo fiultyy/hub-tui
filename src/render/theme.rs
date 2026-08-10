@@ -136,3 +136,73 @@ impl Theme {
         Style::default().fg(self.state_color(state)).add_modifier(Modifier::BOLD)
     }
 }
+
+/// 解析颜色字符串: hex (#RRGGBB) 或命名色 (red/green/blue/etc)。
+/// 返回 None 表示无法解析(调用方保留默认值)。
+pub fn parse_color(s: &str) -> Option<Color> {
+    let s = s.trim();
+    // hex #RRGGBB
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some(Color::Rgb(r, g, b));
+        }
+    }
+    // named colors
+    Some(match s.to_ascii_lowercase().as_str() {
+        "black" => Color::Black,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "gray" | "grey" => Color::Gray,
+        "darkgray" | "darkgrey" => Color::DarkGray,
+        "white" => Color::White,
+        "reset" | "default" => return None, // reset = use base theme
+        _ => return None,
+    })
+}
+
+/// 按 config 覆盖的 key 列表, 返回字段名 slice。
+const THEME_COLOR_KEYS: &[&str] = &[
+    "fg", "bg", "accent", "muted", "working", "idle", "error", "warn",
+    "border", "border_focus", "selection_bg", "selection_fg", "success",
+    "tab_active", "tab_inactive",
+];
+
+impl Theme {
+    /// 按名称加载主题, 再用 config 中的 theme.* 键覆盖颜色。
+    pub fn from_name_with_overrides(name: &str, config: &std::collections::HashMap<String, String>) -> Self {
+        let mut theme = Self::from_name(name);
+        for &key in THEME_COLOR_KEYS {
+            let config_key = format!("theme.{key}");
+            if let Some(val) = config.get(&config_key) {
+                if let Some(color) = parse_color(val) {
+                    match key {
+                        "fg" => theme.fg = color,
+                        "bg" => theme.bg = color,
+                        "accent" => theme.accent = color,
+                        "muted" => theme.muted = color,
+                        "working" => theme.working = color,
+                        "idle" => theme.idle = color,
+                        "error" => theme.error = color,
+                        "warn" => theme.warn = color,
+                        "border" => theme.border = color,
+                        "border_focus" => theme.border_focus = color,
+                        "selection_bg" => theme.selection_bg = color,
+                        "selection_fg" => theme.selection_fg = color,
+                        "success" => theme.success = color,
+                        "tab_active" => theme.tab_active = color,
+                        "tab_inactive" => theme.tab_inactive = color,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        theme
+    }
+}

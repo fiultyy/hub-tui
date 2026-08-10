@@ -453,7 +453,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config / alias_overlay / hotkeys),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -614,6 +614,12 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('r'), KeyModifiers::NONE) if !shell.insert_mode => {
             shell.hotkeys_overlay_active = !shell.hotkeys_overlay_active;
             if shell.hotkeys_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+        // z: theme customization overlay (toggle)
+        (KeyCode::Char('z'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.theme_overlay_active = !shell.theme_overlay_active;
+            if shell.theme_overlay_active { shell.overlay_scroll = 0; }
             return vec![];
         }
 
@@ -1495,6 +1501,30 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         shell.push_toast("hotkey: usage: hotkey:<key> <command> | hotkey:rm:<key>".into());
         return vec![];
     }
+    // theme:<key> <color> — set theme color override (e.g. theme:accent #ff0000, theme:bg reset)
+    if let Some(rest) = buf.strip_prefix("theme:") {
+        if let Some((key, value)) = rest.split_once(' ') {
+            let key = key.trim();
+            let value = value.trim();
+            let full_key = format!("theme.{key}");
+            let valid_keys = ["fg", "bg", "accent", "muted", "working", "idle", "error", "warn",
+                "border", "border_focus", "selection_bg", "selection_fg", "success", "tab_active", "tab_inactive"];
+            if valid_keys.contains(&key) {
+                if value == "reset" || crate::render::theme::parse_color(value).is_some() {
+                    model.set_config(full_key.clone(), value.to_string());
+                    shell.push_toast(format!("theme.{key} = {value}"));
+                    return vec![Cmd::SetConfig { key: full_key, value: value.to_string() }];
+                } else {
+                    shell.push_toast(format!("invalid color: {value} (use #RRGGBB or named color)"));
+                }
+            } else {
+                shell.push_toast(format!("unknown theme key: {key}"));
+            }
+        } else {
+            shell.push_toast("theme: usage: theme:<key> <color> (e.g. theme:accent #ff0000)".into());
+        }
+        return vec![];
+    }
 
 
     vec![]
@@ -1862,6 +1892,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.quick_actions_active = false;
             shell.alias_overlay_active = false;
             shell.hotkeys_overlay_active = false;
+            shell.theme_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {

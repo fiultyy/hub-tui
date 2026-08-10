@@ -21,7 +21,7 @@ use crate::shell::{ConnState, Shell, Tab};
 
 /// 主 draw 入口。immediate-mode: 不 &mut Model/Shell。
 pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
-    let theme = Theme::from_name(&shell.theme_name);
+    let theme = Theme::from_name_with_overrides(&shell.theme_name, &model.config);
     let area = f.area();
 
     // 终端太小: 不渲染
@@ -151,6 +151,11 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     // Hotkeys 浮层
     if shell.hotkeys_overlay_active {
         draw_hotkeys_overlay(f, model, shell, area, &theme);
+    }
+
+    // Theme 定制浮层
+    if shell.theme_overlay_active {
+        draw_theme_overlay(f, model, shell, area, &theme);
     }
 }
 
@@ -2519,6 +2524,81 @@ fn draw_hotkeys_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect,
                     .add_modifier(Modifier::BOLD),
             ),
         );
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+// ───────────────────────── Theme Customization 浮层 ─────────────────────────
+
+/// Theme overlay: 15 color keys with █ swatches in actual colors, shows custom/base status.
+fn draw_theme_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    // The 15 theme color keys with their current Color values
+    let color_entries: Vec<(&str, Color)> = vec![
+        ("fg", theme.fg),
+        ("bg", theme.bg),
+        ("accent", theme.accent),
+        ("muted", theme.muted),
+        ("working", theme.working),
+        ("idle", theme.idle),
+        ("error", theme.error),
+        ("warn", theme.warn),
+        ("border", theme.border),
+        ("border_focus", theme.border_focus),
+        ("selection_bg", theme.selection_bg),
+        ("selection_fg", theme.selection_fg),
+        ("success", theme.success),
+        ("tab_active", theme.tab_active),
+        ("tab_inactive", theme.tab_inactive),
+    ];
+
+    // Build lines: key name, color swatch, config override or base value
+    let lines: Vec<Line> = color_entries
+        .iter()
+        .map(|(key, color)| {
+            let config_key = format!("theme.{key}");
+            let config_val = model.config.get(&config_key);
+            let swatch = Span::styled("█", Style::default().fg(*color));
+            let key_span = Span::styled(format!(" {key:<14}"), Style::default().fg(theme.fg));
+            let val_str = if let Some(v) = config_val {
+                format!(" {v} (custom)")
+            } else {
+                " (base)".to_string()
+            };
+            let val_span = Span::styled(val_str, Style::default().fg(theme.muted));
+            Line::from(vec![key_span, swatch, Span::raw(" "), val_span])
+        })
+        .collect();
+
+    // Centered overlay
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(50);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Theme (z/Esc:close) — use 'theme:key color' to customize ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            title,
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(overlay_area);
     f.render_widget(block, overlay_area);
 
