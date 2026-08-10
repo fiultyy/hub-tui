@@ -44,7 +44,7 @@ pub enum Cmd {
     PersistMessages(Vec<OrchMessage>),
     /// 持久化群组加入。
     PersistGroupJoin { name: String, handle: String },
-    /// 持久化群组离开。
+    /// 持久化群组退出。
     PersistGroupLeave { name: String, handle: String },
     /// 无操作。
     Noop,
@@ -545,6 +545,7 @@ mod tests {
             branch: "main".into(),
             tab_id: "t1".into(),
             leaf_id: "l1".into(),
+            pane_key: "t1:l1".into(),
             title: None,
             connected: true,
             writable: true,

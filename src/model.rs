@@ -23,6 +23,9 @@ pub struct Agent {
     pub tab_id: String,
     #[serde(rename = "leafId")]
     pub leaf_id: String,
+    /// join key: tabId:leafId(对齐 last-status.json paneKey)。apply_agents 时计算。
+    #[serde(skip)]
+    pub pane_key: String,
     pub title: Option<String>,
     pub connected: bool,
     pub writable: bool,
@@ -216,16 +219,18 @@ impl Model {
             .map(|a| (a.handle.clone(), a))
             .collect();
 
-        // 保留已有 agent 的 join 数据,并合并 pending_status
+        // 保留已有 agent 的 join 数据, 计算 pane_key, 合并 pending_status
         for (handle, incoming_agent) in incoming.iter_mut() {
+            // pane_key = tabId:leafId(对齐 last-status.json paneKey)
+            incoming_agent.pane_key = format!("{}:{}", incoming_agent.tab_id, incoming_agent.leaf_id);
             if let Some(old) = self.directory.get(handle) {
                 incoming_agent.source = old.source.clone();
                 incoming_agent.state = old.state.clone();
                 incoming_agent.prompt = old.prompt.clone();
                 incoming_agent.tool_name = old.tool_name.clone();
             }
-            // 合并 pending_status(worktreeId join)
-            if let Some(sj) = self.pending_status.get(&incoming_agent.worktree_id) {
+            // 合并 pending_status(paneKey join)
+            if let Some(sj) = self.pending_status.get(&incoming_agent.pane_key) {
                 incoming_agent.source = Some(sj.source.clone());
                 incoming_agent.state = Some(sj.state.clone());
                 incoming_agent.prompt = sj.prompt.clone();
@@ -245,14 +250,14 @@ impl Model {
         self.generation += 1;
     }
 
-    /// 增量更新: last-status.json 结果。join key = worktreeId。
+    /// 增量更新: last-status.json 结果。join key = paneKey(tabId:leafId)。
     /// 缓存到 pending_status,apply_agents 时合并(解决竞态)。
     pub fn apply_status(&mut self, statuses: Vec<crate::msg::AgentStatus>) {
         let status_map: HashMap<String, StatusJoin> = statuses
             .into_iter()
             .map(|s| {
                 (
-                    s.worktree_id,
+                    s.pane_key.clone(),
                     StatusJoin {
                         source: s.source,
                         state: s.state,
@@ -266,9 +271,9 @@ impl Model {
         // 缓存(供后续 apply_agents 合并)
         self.pending_status.extend(status_map.clone());
 
-        // 立即尝试 join 到现有 directory
+        // 立即尝试 join 到现有 directory(paneKey join)
         for agent in self.directory.values_mut() {
-            if let Some(sj) = status_map.get(&agent.worktree_id) {
+            if let Some(sj) = status_map.get(&agent.pane_key) {
                 agent.source = Some(sj.source.clone());
                 agent.state = Some(sj.state.clone());
                 agent.prompt = sj.prompt.clone();

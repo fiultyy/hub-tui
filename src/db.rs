@@ -47,6 +47,7 @@ impl AgentRow {
             branch: String::new(),
             tab_id: String::new(),
             leaf_id: String::new(),
+            pane_key: String::new(),
             title: self.title,
             connected: self.connected,
             writable: false,
