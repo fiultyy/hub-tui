@@ -277,4 +277,27 @@ mod tests {
         let p = last_status_path();
         assert!(p.to_string_lossy().contains("last-status.json"));
     }
+
+    /// 回归: orchestration inbox --json 的真实 schema 是 snake_case + read 为 int 0/1。
+    /// OrchMessage 之前用 camelCase rename + bool read, 导致反序列化整体失败。
+    #[test]
+    fn test_inbox_json_parses_snake_case_and_int_read() {
+        let raw = r#"{
+            "result": {
+                "messages": [
+                    {"id":"m1","from_handle":"a","to_handle":"hX","subject":"s","body":"","type":"status","read":0,"created_at":"2026-01-01T00:00:00Z","sequence":1},
+                    {"id":"m2","from_handle":"b","to_handle":"hX","subject":"s","body":"","type":"status","read":0,"created_at":"2026-01-01T00:00:00Z","sequence":2},
+                    {"id":"m3","from_handle":"c","to_handle":"hY","subject":"s","body":"","type":"status","read":1,"created_at":"2026-01-01T00:00:00Z","sequence":3}
+                ]
+            }
+        }"#;
+        let parsed: CheckOutput = serde_json::from_str(raw).expect("must parse snake_case inbox json");
+        let mut unread = std::collections::HashMap::new();
+        for msg in &parsed.result.messages {
+        if msg.read != 0 { continue; }
+            *unread.entry(msg.to_handle.clone()).or_default() += 1;
+        }
+        assert_eq!(unread.get("hX"), Some(&2), "hX has two unread");
+        assert!(unread.get("hY").is_none(), "hY has no unread entries");
+    }
 }
