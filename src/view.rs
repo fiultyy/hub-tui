@@ -9,7 +9,7 @@
 //! - Toast 层: 浮在底部上方
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -121,15 +121,13 @@ fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
     }
 }
 
-/// Directory tab: agent card 网格。
+/// Directory tab: agent card 网格(色块底色,无边框)。
 ///
-/// 每个 card 5 行高(border×2 + content×3):
-///   ┌──────────────────────────────┐
-///   │ ● term_fca57171…        Pi   │  ← 连接灯 + handle + title
-///   │ ~/.orca                     │  ← cwd(global→floating)
-///   │ omp · running               │  ← source · state(branch)
-///   └──────────────────────────────┘
-/// card 宽 36, 列数自适应终端宽度。
+/// 每个 card 3 行高(纯色块底色):
+///   ● term_fca57171…              Pi   ← 连接灯 + handle + title
+///   📁 ~/.orca                          ← cwd
+///   omp · running (main)               ← source · state (branch)
+/// card 间 1 行/列间隔, 底色区分选中/连接/离线。
 fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     let focused = matches!(shell.focus, crate::shell::FocusTarget::Directory);
     let block = blocks::bordered_block("Directory", focused, theme);
@@ -145,25 +143,21 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
         return;
     }
 
-    // 排序: 按字母序
     let mut handles: Vec<&String> = model.directory.keys().collect();
     handles.sort();
     let total = handles.len();
 
-    // card 尺寸
     let card_w: u16 = 36;
-    let card_h: u16 = 5; // border(1) + content(3) + border(1)
+    let card_h: u16 = 4; // 3 content + 1 gap
     let gap: u16 = 1;
     let cols = ((inner.width + gap) / (card_w + gap)).max(1) as usize;
     let rows_per_col = (inner.height / card_h) as usize;
     let visible = cols * rows_per_col;
 
-    // 滚动偏移: 让选中 card 可见
     let scroll = if total <= visible {
         0
     } else {
-        let page = shell.cursor / visible;
-        page * visible
+        (shell.cursor / visible) * visible
     };
 
     for (i, handle) in handles.iter().enumerate() {
@@ -175,7 +169,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
         let row = idx / cols;
         let x = inner.x + col as u16 * (card_w + gap);
         let y = inner.y + row as u16 * card_h;
-        let card_area = Rect { x, y, width: card_w, height: card_h };
+        let card_area = Rect { x, y, width: card_w, height: 3 }; // 3 rows content
 
         if card_area.bottom() > inner.bottom() {
             break;
@@ -187,7 +181,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     }
 }
 
-/// 渲染单个 agent card。
+/// 渲染单个 agent card(纯色块底色,无边框)。
 fn draw_agent_card(
     f: &mut Frame,
     agent: &crate::model::Agent,
@@ -195,82 +189,65 @@ fn draw_agent_card(
     theme: &Theme,
     selected: bool,
 ) {
-    // card border
-    let border_color = if selected {
-        theme.accent
+    // 底色: selected=accent_tint, connected=surface0, disconnected=muted_bg
+    let bg = if selected {
+        Color::Rgb(69, 71, 90)    // Catppuccin surface1
     } else if agent.connected {
-        theme.border
+        Color::Rgb(49, 50, 68)    // Catppuccin surface0
     } else {
-        theme.muted
+        Color::Rgb(35, 36, 54)    // 比 base 略暗
     };
-    let border_style = Style::default().fg(border_color);
+    let bg_style = Style::default().bg(bg);
 
-    // card title = 短 handle(后 8 位)
-    let short = if agent.handle.len() >= 12 {
-        &agent.handle[agent.handle.len().saturating_sub(8)..]
-    } else {
-        &agent.handle
-    };
-    let title_str = format!(" {} ", short);
-    let title = ratatui::widgets::Block::default()
-        .borders(ratatui::widgets::Borders::ALL)
-        .border_style(border_style)
-        .title(Span::styled(
-            title_str,
-            if selected {
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.muted)
-            },
-        ));
+    // 先 Clear 再填色块,确保干净
+    f.render_widget(ratatui::widgets::Clear, area);
 
-    let inner = title.inner(area);
-    f.render_widget(title, area);
-
-    // line 1: 连接灯 + handle(截断) + title
+    // line 1: 连接灯 + handle + title
     let conn_span = Span::styled(
         if agent.connected { "● " } else { "○ " },
-        Style::default().fg(if agent.connected { theme.success } else { theme.muted }),
+        Style::default()
+            .fg(if agent.connected { theme.success } else { theme.muted })
+            .bg(bg),
     );
-    let handle_display = crate::render::truncate_width(&agent.handle, 20);
-    let handle_span = Span::styled(handle_display, Style::default().fg(theme.fg));
+    let handle_display = crate::render::truncate_width(&agent.handle, 22);
+    let handle_span = Span::styled(
+        handle_display,
+        Style::default().fg(if selected { theme.accent } else { theme.fg }).bg(bg),
+    );
 
-    // title 在右侧(如果有)
     let title_text = agent.title.as_deref().unwrap_or("").trim();
-    let used = 2 + crate::render::truncate_width(&agent.handle, 20).len();
-    let avail = inner.width as usize;
-    let title_truncated = if !title_text.is_empty() && avail > used + 3 {
-        crate::render::truncate_width(title_text, avail.saturating_sub(used + 2))
+    let handle_w = 2 + crate::render::truncate_width(&agent.handle, 22).len();
+    let avail = area.width as usize;
+    let title_trunc = if !title_text.is_empty() && avail > handle_w + 3 {
+        crate::render::truncate_width(title_text, avail.saturating_sub(handle_w + 2))
     } else {
         String::new()
     };
-    let padding = avail.saturating_sub(used + title_truncated.chars().count());
-    let title_span = Span::styled(title_truncated, Style::default().fg(theme.muted));
-    let pad_span = Span::raw(" ".repeat(padding));
+    let title_w = title_trunc.chars().count();
+    let pad_w = avail.saturating_sub(handle_w + title_w);
+    let pad_span = Span::styled(" ".repeat(pad_w), bg_style);
+    let title_span = Span::styled(title_trunc, Style::default().fg(theme.muted).bg(bg));
 
     let line1 = Line::from(vec![conn_span, handle_span, pad_span, title_span]);
 
-    // line 2: cwd(global-floating 特殊处理)
+    // line 2: cwd
+    let home = std::env::var("HOME").unwrap_or_default();
     let cwd_display = if agent.cwd.is_empty() {
         "(global)".to_string()
+    } else if !home.is_empty() && agent.cwd.starts_with(&home) {
+        format!("~{}", &agent.cwd[home.len()..])
     } else {
-        // 缩短: ~/ 替换 home
-        let home = std::env::var("HOME").unwrap_or_default();
-        let cwd = if !home.is_empty() && agent.cwd.starts_with(&home) {
-            format!("~{}", &agent.cwd[home.len()..])
-        } else {
-            agent.cwd.clone()
-        };
-        cwd
+        agent.cwd.clone()
     };
-    let cwd_str = crate::render::truncate_width(&cwd_display, inner.width as usize);
-    let cwd_span = Span::styled(
-        format!("📁 {}", cwd_str),
-        Style::default().fg(theme.muted),
-    );
-    let line2 = Line::from(vec![cwd_span]);
+    let cwd_str = crate::render::truncate_width(&cwd_display, (area.width as usize).saturating_sub(2));
+    let cwd_w = cwd_str.chars().count();
+    let line2 = Line::from(vec![
+        Span::styled("  ", bg_style),
+        Span::styled(cwd_str, Style::default().fg(theme.muted).bg(bg)),
+        Span::styled(" ".repeat(avail.saturating_sub(2 + cwd_w)), bg_style),
+    ]);
 
-    // line 3: source · state(branch)
+    // line 3: source · state (branch)
     let source = agent.source.as_deref().unwrap_or("-");
     let state = agent.state.as_deref().unwrap_or("-");
     let branch = if !agent.branch.is_empty() {
@@ -280,16 +257,20 @@ fn draw_agent_card(
     };
     let meta_str = crate::render::truncate_width(
         &format!("{} · {}{}", source, state, branch),
-        inner.width as usize,
+        (area.width as usize).saturating_sub(2),
     );
-    let meta_span = Span::styled(
-        meta_str,
-        Style::default().fg(theme.state_color(agent.state.as_deref())),
-    );
-    let line3 = Line::from(vec![meta_span]);
+    let meta_w = meta_str.chars().count();
+    let line3 = Line::from(vec![
+        Span::styled("  ", bg_style),
+        Span::styled(
+            meta_str,
+            Style::default().fg(theme.state_color(agent.state.as_deref())).bg(bg),
+        ),
+        Span::styled(" ".repeat(avail.saturating_sub(2 + meta_w)), bg_style),
+    ]);
 
     let content = ratatui::widgets::Paragraph::new(vec![line1, line2, line3]);
-    f.render_widget(content, inner);
+    f.render_widget(content, area);
 }
 
 /// Groups tab: 群组列表 + 成员。
