@@ -62,6 +62,15 @@ pub enum AppMsg {
     UnreadUpdated(std::collections::HashMap<String, usize>),
     /// socket 查询请求(来自 agent 连接)。
     SocketQuery(SocketReq),
+    /// 信息 toast(非错误)。
+    Info(String),
+    InjectOk(usize),
+    /// PTY 注入失败。
+    InjectFailed(String),
+    /// terminal read 结果回灌。
+    TerminalOutput(String),
+    /// worktree ps 结果回灌。
+    WorktreePsLoaded(Vec<crate::model::WorktreePsEntry>),
     /// 通用错误。
     Error(String),
 }

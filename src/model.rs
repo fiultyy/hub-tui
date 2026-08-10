@@ -206,6 +206,8 @@ pub struct Model {
     /// 可能 StatusUpdated 先到但 directory 为空。缓存到这,AgentsLoaded 时合并。
     pub pending_status: HashMap<String, StatusJoin>,
     pub unread_counts: HashMap<String, usize>,
+    /// worktree ps 编排摘要(按需刷新)。
+    pub worktree_ps: Vec<WorktreePsEntry>,
 }
 
 impl Model {
@@ -217,6 +219,7 @@ impl Model {
             generation: 0,
             pending_status: HashMap::new(),
             unread_counts: HashMap::new(),
+            worktree_ps: Vec::new(),
         }
     }
 
@@ -312,6 +315,25 @@ impl Model {
         self.unread_counts = counts;
         self.generation += 1;
     }
+
+    /// 更新 worktree ps 编排摘要。
+    pub fn apply_worktree_ps(&mut self, entries: Vec<WorktreePsEntry>) {
+        self.worktree_ps = entries;
+        self.generation += 1;
+    }
+}
+
+/// worktree ps 条目(对齐 orca-ide worktree ps --json 输出)。
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct WorktreePsEntry {
+    #[serde(rename = "worktreePath", default)]
+    pub path: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub agent_count: usize,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 /// Directory 排序: 按 worktreePath 分组, 组间按最近活跃(max lastOutputAt)降序,

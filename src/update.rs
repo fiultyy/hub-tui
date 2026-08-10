@@ -46,6 +46,16 @@ pub enum Cmd {
     PersistGroupJoin { name: String, handle: String },
     /// 持久化群组退出。
     PersistGroupLeave { name: String, handle: String },
+    /// spawn: PTY 直接注入文本。
+    TerminalSend { handle: String, text: String },
+    /// spawn: 关闭终端。
+    CloseTerminal { handle: String },
+    /// spawn: 重命名终端 tab。
+    RenameTerminal { handle: String, new_title: String },
+    /// spawn: 读取终端输出。
+    ReadTerminal { handle: String },
+    /// spawn: worktree ps 编排摘要。
+    RefreshWorktreePs,
     /// 无操作。
     Noop,
     /// 退出。
@@ -146,9 +156,37 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![Cmd::PersistMessages(persist)]
         }
 
-        // ──── socket 查询请求(ADR-3) ────
         AppMsg::SocketQuery(req) => {
             vec![Cmd::QuerySocket { req }]
+        }
+
+        // ──── PTY 注入结果 ────
+        AppMsg::InjectOk(n) => {
+            shell.push_toast(format!("PTY: sent {n} bytes"));
+            vec![]
+        }
+        AppMsg::InjectFailed(e) => {
+            shell.push_toast(format!("PTY failed: {e}"));
+            vec![]
+        }
+
+        // ──── terminal read 结果(浮层显示) ────
+        AppMsg::TerminalOutput(text) => {
+            shell.overlay_content = Some(text);
+            shell.overlay_scroll = 0;
+            vec![]
+        }
+
+        // ──── worktree ps 结果 ────
+        AppMsg::WorktreePsLoaded(entries) => {
+            model.apply_worktree_ps(entries);
+            vec![]
+        }
+
+        // ──── 信息 toast ────
+        AppMsg::Info(msg) => {
+            shell.push_toast(msg);
+            vec![Cmd::RefreshAgents]
         }
 
         // ──── 通用错误 ────
@@ -174,6 +212,11 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.filter_active {
         return handle_filter_key(model, shell, k);
     }
+    // 浮层激活时(overlay_content / worktree_ps),键盘走浮层处理
+    if shell.overlay_content.is_some() || shell.worktree_ps_active {
+        return handle_overlay_key(model, shell, k);
+    }
+
 
     match (k.code, k.modifiers) {
         // Ctrl-P 或 : 打开命令面板
@@ -191,6 +234,12 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             shell.filter_active = true;
             shell.filter_query = Some(String::new());
             return vec![];
+        }
+
+        // w: worktree ps 浮层
+        (KeyCode::Char('w'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.worktree_ps_active = true;
+            return vec![Cmd::RefreshWorktreePs];
         }
 
         (KeyCode::Char('q'), KeyModifiers::NONE) if !shell.insert_mode => {
@@ -326,6 +375,17 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             }
         }
 
+        // p(in Directory tab): PTY 直接注入模式
+        (KeyCode::Char('p'), KeyModifiers::NONE) => {
+            let selected_handle = selected_agent_handle(model, shell);
+            if let Some(handle) = selected_handle {
+                shell.insert_mode = true;
+                shell.focus = FocusTarget::Input;
+                shell.input_buf = format!("pty:{handle} ");
+            }
+            vec![]
+        }
+
         _ => vec![],
     }
 }
@@ -343,11 +403,27 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
                 Tab::Messages => FocusTarget::Messages,
             };
 
-            // 解析 "to:handle subject body" 格式
+            // 解析 "to:handle subject body" 格式(编排 inbox)
             if let Some((to, rest)) = buf.strip_prefix("to:").and_then(|s| s.split_once(' ')) {
                 let subject = rest.to_string();
-                let body = String::new(); // 简化: 单行 subject 作 body
+                let body = String::new();
                 return vec![Cmd::OrchestrationSend { to: to.to_string(), subject, body }];
+            }
+
+            // 解析 "pty:handle text" 格式(PTY 直接注入)
+            if let Some((handle, text)) = buf.strip_prefix("pty:").and_then(|s| s.split_once(' ')) {
+                if !text.is_ascii() {
+                    _shell.push_toast("PTY: non-ASCII may fail".into());
+                }
+                return vec![Cmd::TerminalSend { handle: handle.to_string(), text: text.to_string() }];
+            }
+
+            // 解析 "rename:handle new_title" 格式
+            if let Some((handle, title)) = buf.strip_prefix("rename:").and_then(|s| s.split_once(' ')) {
+                if title.is_empty() {
+                    return vec![];
+                }
+                return vec![Cmd::RenameTerminal { handle: handle.to_string(), new_title: title.to_string() }];
             }
 
             vec![]
@@ -454,6 +530,29 @@ fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
         }
         (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
             shell.cursor = shell.cursor.saturating_sub(1);
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
+// ───────────────────────── 浮层键盘处理 ─────────────────────────
+
+/// 浮层键盘: j/k 滚动, Esc/q 关闭。
+fn handle_overlay_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+    match (k.code, k.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
+            shell.overlay_content = None;
+            shell.overlay_scroll = 0;
+            shell.worktree_ps_active = false;
+            vec![]
+        }
+        (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
+            shell.overlay_scroll = shell.overlay_scroll.saturating_add(1);
+            vec![]
+        }
+        (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
+            shell.overlay_scroll = shell.overlay_scroll.saturating_sub(1);
             vec![]
         }
         _ => vec![],

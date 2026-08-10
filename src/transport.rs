@@ -269,10 +269,105 @@ fn last_status_path() -> std::path::PathBuf {
 fn dirs_home() -> std::path::PathBuf {
     std::env::var("HOME")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| "/tmp".into())
+    .unwrap_or_else(|_| "/tmp".into())
 }
 
-// ───────────────────────── 测试 ─────────────────────────
+// ───────────────────────── terminal 操作 CLI 包装 ─────────────────────────
+
+/// PTY 直接注入: `orca-ide terminal send --text <text> --enter`。
+/// 踩坑: 非 ASCII 可能被 crossterm 拆成无效 key event(见 orca-com skill)。
+pub fn terminal_send(handle: &str, text: &str) -> Result<usize, String> {
+    let output = Command::new("orca-ide")
+        .args(["terminal", "send", "--terminal", handle, "--text", text, "--enter"])
+        .output()
+        .map_err(|e| format!("terminal send failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "terminal send exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(text.len())
+}
+
+/// 关闭终端: `orca-ide terminal close --terminal <handle>`。
+pub fn terminal_close(handle: &str) -> Result<(), String> {
+    let output = Command::new("orca-ide")
+        .args(["terminal", "close", "--terminal", handle])
+        .output()
+        .map_err(|e| format!("terminal close failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "terminal close exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// 重命名终端 tab: `orca-ide terminal rename --terminal <handle> --title <name>`。
+pub fn terminal_rename(handle: &str, title: &str) -> Result<(), String> {
+    let output = Command::new("orca-ide")
+        .args(["terminal", "rename", "--terminal", handle, "--title", title])
+        .output()
+        .map_err(|e| format!("terminal rename failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "terminal rename exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// 读终端输出: `orca-ide terminal read --terminal <handle>`。
+pub fn terminal_read_output(handle: &str) -> Result<String, String> {
+    let output = Command::new("orca-ide")
+        .args(["terminal", "read", "--terminal", handle])
+        .output()
+        .map_err(|e| format!("terminal read failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "terminal read exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// worktree ps: `orca-ide worktree ps --json`。
+pub fn fetch_worktree_ps() -> Result<Vec<crate::model::WorktreePsEntry>, String> {
+    let output = Command::new("orca-ide")
+        .args(["worktree", "ps", "--json"])
+        .output()
+        .map_err(|e| format!("worktree ps failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "worktree ps exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let raw: WorktreePsResult = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("parse worktree ps JSON: {e}"))?;
+    Ok(raw.result.worktrees)
+}
+
+/// worktree ps JSON 壳。
+#[derive(serde::Deserialize)]
+struct WorktreePsResult {
+    result: WorktreePsData,
+}
+
+#[derive(serde::Deserialize)]
+struct WorktreePsData {
+    #[serde(default)]
+    worktrees: Vec<crate::model::WorktreePsEntry>,
+}
 
 #[cfg(test)]
 mod tests {

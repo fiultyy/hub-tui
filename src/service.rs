@@ -243,6 +243,51 @@ impl Service {
                 crate::update::Cmd::PersistGroupLeave { name, handle } => {
                     self.persist_group_leave(&name, &handle);
                 }
+                crate::update::Cmd::TerminalSend { handle, text } => {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        match crate::transport::terminal_send(&handle, &text) {
+                            Ok(n) => { let _ = tx.send(AppMsg::InjectOk(n)); }
+                            Err(e) => { let _ = tx.send(AppMsg::InjectFailed(e)); }
+                        }
+                    });
+                }
+                crate::update::Cmd::CloseTerminal { handle } => {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        match crate::transport::terminal_close(&handle) {
+                            Ok(()) => { let _ = tx.send(AppMsg::Info(format!("closed {handle}"))); }
+                            Err(e) => { let _ = tx.send(AppMsg::Error(e)); }
+                        }
+                    });
+                }
+                crate::update::Cmd::RenameTerminal { handle, new_title } => {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        match crate::transport::terminal_rename(&handle, &new_title) {
+                            Ok(()) => { let _ = tx.send(AppMsg::Info(format!("renamed to {new_title}"))); }
+                            Err(e) => { let _ = tx.send(AppMsg::Error(e)); }
+                        }
+                    });
+                }
+                crate::update::Cmd::ReadTerminal { handle } => {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        match crate::transport::terminal_read_output(&handle) {
+                            Ok(text) => { let _ = tx.send(AppMsg::TerminalOutput(text)); }
+                            Err(e) => { let _ = tx.send(AppMsg::Error(e)); }
+                        }
+                    });
+                }
+                crate::update::Cmd::RefreshWorktreePs => {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        match crate::transport::fetch_worktree_ps() {
+                            Ok(entries) => { let _ = tx.send(AppMsg::WorktreePsLoaded(entries)); }
+                            Err(e) => { let _ = tx.send(AppMsg::Error(e)); }
+                        }
+                    });
+                }
                 _ => {}
             }
         }

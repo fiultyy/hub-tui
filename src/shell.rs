@@ -80,8 +80,13 @@ pub struct Shell {
     pub palette_cursor: usize,
     /// 过滤模式激活(Directory tab 按 / 进入)。
     pub filter_active: bool,
-    /// 过滤查询(source:claude / state:working / 自由文本)。
     pub filter_query: Option<String>,
+    /// 浮层内容(read output / worktree ps)。
+    pub overlay_content: Option<String>,
+    /// 浮层滚动位置。
+    pub overlay_scroll: usize,
+    /// worktree ps 浮层激活。
+    pub worktree_ps_active: bool,
     /// generation guard(范式 3: 防陈旧回调)。
     generation: u64,
 }
@@ -103,6 +108,9 @@ impl Shell {
             palette_cursor: 0,
             filter_active: false,
             filter_query: None,
+            overlay_content: None,
+            overlay_scroll: 0,
+            worktree_ps_active: false,
             generation: 0,
         }
     }

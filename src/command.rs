@@ -91,6 +91,31 @@ pub fn builtin_commands() -> Vec<Command> {
             enter_filter,
         ),
         Command::new(
+            "inject pty",
+            "Send text directly to agent PTY (real-time, ASCII only)",
+            inject_pty,
+        ),
+        Command::new(
+            "close terminal",
+            "Close the selected agent's terminal",
+            close_terminal,
+        ),
+        Command::new(
+            "rename terminal",
+            "Rename the selected agent's tab (enters input mode)",
+            rename_terminal,
+        ),
+        Command::new(
+            "read output",
+            "Read selected agent's terminal output",
+            read_output,
+        ),
+        Command::new(
+            "worktree ps",
+            "Show cross-worktree orchestration summary",
+            show_worktree_ps,
+        ),
+        Command::new(
             "quit",
             "Exit hub-tui",
             quit,
@@ -166,6 +191,52 @@ fn enter_filter(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 
 fn quit(_model: &Model, _shell: &mut Shell) -> Vec<Cmd> {
     vec![Cmd::Quit]
+}
+
+fn inject_pty(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    if let Some(handle) = selected_handle(model, shell) {
+        shell.insert_mode = true;
+        shell.focus = crate::shell::FocusTarget::Input;
+        shell.input_buf = format!("pty:{handle} ");
+    } else {
+        shell.push_toast("No agent selected".into());
+    }
+    vec![]
+}
+
+fn close_terminal(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    if let Some(handle) = selected_handle(model, shell) {
+        shell.push_toast(format!("closing {handle}"));
+        vec![Cmd::CloseTerminal { handle }]
+    } else {
+        shell.push_toast("No agent selected".into());
+        vec![]
+    }
+}
+
+fn rename_terminal(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    if let Some(handle) = selected_handle(model, shell) {
+        shell.insert_mode = true;
+        shell.focus = crate::shell::FocusTarget::Input;
+        shell.input_buf = format!("rename:{handle} ");
+    } else {
+        shell.push_toast("No agent selected".into());
+    }
+    vec![]
+}
+
+fn read_output(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    if let Some(handle) = selected_handle(model, shell) {
+        vec![Cmd::ReadTerminal { handle }]
+    } else {
+        shell.push_toast("No agent selected".into());
+        vec![]
+    }
+}
+
+fn show_worktree_ps(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.worktree_ps_active = true;
+    vec![Cmd::RefreshWorktreePs]
 }
 
 // ───────────────────────── 过滤 + 匹配 ─────────────────────────

@@ -75,6 +75,16 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.filter_active {
         draw_filter_indicator(f, shell, outer[2], &theme);
     }
+
+    // terminal read 浮层(overlay_content 有内容时弹出)
+    if let Some(content) = &shell.overlay_content {
+        draw_output_overlay(f, content, shell, area, &theme);
+    }
+
+    // worktree ps 浮层
+    if shell.worktree_ps_active {
+        draw_worktree_ps_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -880,6 +890,108 @@ fn draw_filter_indicator(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+// ───────────────────────── terminal read 浮层 ─────────────────────────
+
+/// 浮层显示 terminal read 输出(可滚动)。
+fn draw_output_overlay(f: &mut Frame, content: &str, shell: &Shell, area: Rect, theme: &Theme) {
+    let overlay_h = area.height.saturating_sub(4).max(10);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+
+    f.render_widget(ratatui::widgets::Clear, Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+
+    let border = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " Terminal Output (j/k: scroll, Esc: close) ",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = border.inner(Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+    f.render_widget(border, Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+
+    let lines: Vec<&str> = content.lines().collect();
+    let visible_h = inner.height as usize;
+    let start = shell.overlay_scroll.min(lines.len().saturating_sub(visible_h));
+    let visible: Vec<Line> = lines[start..start.min(lines.len()).min(start + visible_h)]
+        .iter()
+        .map(|l| Line::from(Span::styled(*l, Style::default().fg(theme.fg))))
+        .collect();
+    f.render_widget(
+        ratatui::widgets::Paragraph::new(visible),
+        inner,
+    );
+}
+
+// ───────────────────────── worktree ps 浮层 ─────────────────────────
+
+/// worktree ps 浮层: 显示跨 worktree 编排摘要。
+fn draw_worktree_ps_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+
+    f.render_widget(ratatui::widgets::Clear, Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+
+    let border = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " Worktree Ps (j/k: scroll, Esc: close) ",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = border.inner(Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+    f.render_widget(border, Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+
+    if model.worktree_ps.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled("(loading...)", Style::default().fg(theme.muted))),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = model.worktree_ps.iter().map(|e| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let display = if !home.is_empty() && e.path.starts_with(&home) {
+            format!("~{}", &e.path[home.len()..])
+        } else if e.path.is_empty() {
+            "(global)".to_string()
+        } else {
+            e.path.clone()
+        };
+        Line::from(vec![
+            Span::styled(
+                format!(" {} agents={}", display, e.agent_count),
+                Style::default().fg(theme.fg),
+            ),
+            Span::styled(
+                format!(" {}", e.branch),
+                Style::default().fg(theme.muted),
+            ),
+        ])
+    }).collect();
+
+    let visible_h = inner.height as usize;
+    let start = shell.overlay_scroll.min(lines.len().saturating_sub(visible_h));
+    let visible: Vec<Line> = lines[start..start.min(lines.len()).min(start + visible_h)].to_vec();
+    f.render_widget(ratatui::widgets::Paragraph::new(visible), inner);
 }
 
 #[cfg(test)]
