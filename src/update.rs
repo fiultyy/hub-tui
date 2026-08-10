@@ -313,6 +313,19 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
 /// 键盘处理。全局快捷键优先(q/Ctrl+C 退出, Tab 切 tab), 其余按 insert_mode 分流。
 fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+    // 全局搜索激活时,键盘走搜索处理
+    if shell.search_active {
+        return handle_search_key(model, shell, k);
+    }
+    // Ctrl-S: 切换全局搜索(非输入模式)
+    if !shell.insert_mode {
+        if let (KeyCode::Char('s'), KeyModifiers::CONTROL) = (k.code, k.modifiers) {
+            shell.search_active = true;
+            shell.search_query.clear();
+            shell.search_cursor = 0;
+            return vec![];
+        }
+    }
     // 命令面板激活时,所有键盘事件走面板处理
     if shell.palette_active {
         return handle_palette_key(model, shell, k);
@@ -948,6 +961,112 @@ fn handle_palette_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             vec![]
         }
         _ => vec![],
+    }
+}
+
+// ───────────────────────── 搜索浮层键盘处理 ─────────────────────────
+
+/// 搜索浮层键盘: 输入查询, j/k 导航, Enter 跳转, Esc 关闭。
+fn handle_search_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+    match (k.code, k.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => {
+            shell.search_active = false;
+            shell.search_query.clear();
+            shell.search_cursor = 0;
+            vec![]
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            dispatch_search_jump(model, shell)
+        }
+        (KeyCode::Down, KeyModifiers::NONE) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+            let results = crate::model::global_search(model, &shell.search_query);
+            if shell.search_cursor + 1 < results.len() {
+                shell.search_cursor += 1;
+            }
+            vec![]
+        }
+        (KeyCode::Up, KeyModifiers::NONE) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            shell.search_cursor = shell.search_cursor.saturating_sub(1);
+            vec![]
+        }
+        (KeyCode::Backspace, KeyModifiers::NONE) => {
+            shell.search_query.pop();
+            shell.search_cursor = 0;
+            vec![]
+        }
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            shell.search_query.push(c);
+            shell.search_cursor = 0;
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
+/// 搜索结果选中后的跳转分发。
+fn dispatch_search_jump(model: &mut Model, shell: &mut Shell) -> Vec<Cmd> {
+    let results = crate::model::global_search(model, &shell.search_query);
+    let result = match results.get(shell.search_cursor) {
+        Some(r) => r.clone(),
+        None => {
+            shell.search_active = false;
+            shell.search_query.clear();
+            shell.search_cursor = 0;
+            return vec![];
+        }
+    };
+    // 先关闭搜索
+    shell.search_active = false;
+    shell.search_query.clear();
+    shell.search_cursor = 0;
+
+    use crate::model::JumpTarget;
+    match result.jump_target {
+        JumpTarget::AgentHandle(handle) => {
+            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
+            if let Some(idx) = sorted.iter().position(|h| h == &handle) {
+                shell.tab = Tab::Directory;
+                shell.cursor = idx;
+                shell.focus = FocusTarget::Directory;
+                shell.filter_active = false;
+                shell.filter_query = None;
+            }
+            vec![]
+        }
+        JumpTarget::MessageId(id) => {
+            let msgs: Vec<_> = model.messages.iter().rev().collect();
+            if let Some(idx) = msgs.iter().position(|m| m.id == id) {
+                shell.tab = Tab::Messages;
+                shell.cursor = idx;
+                shell.focus = FocusTarget::Messages;
+                shell.filter_active = false;
+                shell.filter_query = None;
+            }
+            vec![]
+        }
+        JumpTarget::CommandName(name) => {
+            let all = crate::command::builtin_commands();
+            if let Some(cmd) = all.iter().find(|c| c.name == name) {
+                let handler = cmd.handler;
+                return handler(model, shell);
+            }
+            vec![]
+        }
+        JumpTarget::EventIndex(idx) => {
+            shell.activity_active = true;
+            // events 浮层以 iter().rev() 渲染(最新在前); scroll 从顶部算
+            // idx 是 model.events 中的位置(0=最旧); 最新 = len-1
+            // 浮层 scroll=0 显示最新; scroll 增加显示更旧
+            let total = model.events.len();
+            shell.overlay_scroll = total.saturating_sub(1).saturating_sub(idx);
+            vec![]
+        }
+        JumpTarget::HistoryIndex(idx) => {
+            shell.history_overlay_active = true;
+            let total = model.history.len();
+            shell.overlay_scroll = total.saturating_sub(1).saturating_sub(idx);
+            vec![]
+        }
     }
 }
 
@@ -1629,5 +1748,42 @@ mod tests {
         let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
         assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistHistoryEntry(_))));
         assert_eq!(model.history.len(), 1);
+    }
+
+    #[test]
+    fn search_open_and_close() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        // Ctrl-S opens
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_ctrl_key('s')));
+        assert!(shell.search_active);
+        // Esc closes
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Esc)));
+        assert!(!shell.search_active);
+    }
+
+    #[test]
+    fn search_jump_to_agent() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        // seed agent
+        let mut agent = crate::model::Agent {
+            handle: "term_abc".to_string(), pty_id: None, cwd: "/tmp".to_string(),
+            worktree_id: String::new(), branch: String::new(), tab_id: String::new(),
+            leaf_id: String::new(), pane_key: String::new(), title: None,
+            connected: true, writable: true, source: Some("claude".to_string()),
+            state: Some("working".to_string()), prompt: None, tool_name: None,
+            tool_input: None, last_assistant_msg: None, preview: None, last_output_at: None,
+        };
+        model.directory.insert("term_abc".to_string(), agent);
+        // open search, type query matching the handle
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_ctrl_key('s')));
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('a'))));
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('b'))));
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('c'))));
+        // Enter → jump
+        let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
+        assert!(!shell.search_active);
+        assert_eq!(shell.tab, Tab::Directory);
     }
 }

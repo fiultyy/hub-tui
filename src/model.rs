@@ -813,3 +813,152 @@ pub fn messages_filter_ids(
         .map(|m| m.id.clone())
         .collect()
 }
+
+// ───────────────────────── 全局搜索 ─────────────────────────
+
+/// 搜索结果分类(决定分组顺序和跳转语义)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchCategory {
+    Agent,
+    Message,
+    Event,
+    History,
+    Command,
+}
+
+impl SearchCategory {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Agent => "Agents",
+            Self::Message => "Messages",
+            Self::Event => "Events",
+            Self::History => "History",
+            Self::Command => "Commands",
+        }
+    }
+}
+
+/// 搜索结果的导航目标。
+#[derive(Debug, Clone)]
+pub enum JumpTarget {
+    AgentHandle(String),
+    MessageId(String),
+    EventIndex(usize),
+    HistoryIndex(usize),
+    CommandName(String),
+}
+
+/// 一条搜索结果。
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub category: SearchCategory,
+    pub primary: String,
+    pub secondary: String,
+    pub jump_target: JumpTarget,
+}
+
+/// 截断到 max_len 字符(按 char 边界), 超出加 "…"。
+fn truncate_search(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        let mut t: String = s.chars().take(max_len).collect();
+        t.push('…');
+        t
+    }
+}
+
+/// 全局搜索: 跨所有数据源 fuzzy match。空 query → 空 vec。
+/// 分组顺序: Agent > Message > Event > History > Command。每组上限 5。
+pub fn global_search(model: &Model, query: &str) -> Vec<SearchResult> {
+    if query.is_empty() {
+        return vec![];
+    }
+    let q = query.to_ascii_lowercase();
+    let mut results = Vec::new();
+
+    // Agents (cap 5)
+    let mut count = 0;
+    for agent in model.directory.values() {
+        if count >= 5 { break; }
+        let title = agent.title.as_deref().unwrap_or("");
+        let source = agent.source.as_deref().unwrap_or("");
+        let state = agent.state.as_deref().unwrap_or("");
+        if crate::command::fuzzy_match(&q, &agent.handle)
+            || crate::command::fuzzy_match(&q, title)
+            || crate::command::fuzzy_match(&q, &agent.cwd)
+            || crate::command::fuzzy_match(&q, source)
+        {
+            results.push(SearchResult {
+                category: SearchCategory::Agent,
+                primary: agent.handle.clone(),
+                secondary: format!("{source} · {state} · {}", agent.cwd),
+                jump_target: JumpTarget::AgentHandle(agent.handle.clone()),
+            });
+            count += 1;
+        }
+    }
+
+    // Messages (cap 5, newest-first)
+    let mut count = 0;
+    for m in model.messages.iter().rev() {
+        if count >= 5 { break; }
+        if crate::command::fuzzy_match(&q, &m.from_handle)
+            || crate::command::fuzzy_match(&q, &m.subject)
+            || crate::command::fuzzy_match(&q, &m.body)
+        {
+            results.push(SearchResult {
+                category: SearchCategory::Message,
+                primary: if !m.subject.is_empty() { m.subject.clone() } else { m.from_handle.clone() },
+                secondary: format!("from {} · {}", m.from_handle, truncate_search(&m.body, 60)),
+                jump_target: JumpTarget::MessageId(m.id.clone()),
+            });
+            count += 1;
+        }
+    }
+
+    // Events (cap 5, newest-first)
+    let mut count = 0;
+    for (idx, ev) in model.events.iter().rev().enumerate() {
+        if count >= 5 { break; }
+        if crate::command::fuzzy_match(&q, &ev.text) || crate::command::fuzzy_match(&q, &ev.source) {
+            let real_idx = model.events.len().saturating_sub(1).saturating_sub(idx);
+            results.push(SearchResult {
+                category: SearchCategory::Event,
+                primary: truncate_search(&ev.text, 80),
+                secondary: format!("{} · {} · {}", ev.severity.as_str(), ev.category.as_str(), ev.source),
+                jump_target: JumpTarget::EventIndex(real_idx),
+            });
+            count += 1;
+        }
+    }
+
+    // History (cap 5, newest-first)
+    let mut count = 0;
+    for (idx, entry) in model.history.iter().rev().enumerate() {
+        if count >= 5 { break; }
+        if crate::command::fuzzy_match(&q, &entry.text) || crate::command::fuzzy_match(&q, &entry.prefix) {
+            let real_idx = model.history.len().saturating_sub(1).saturating_sub(idx);
+            results.push(SearchResult {
+                category: SearchCategory::History,
+                primary: entry.text.clone(),
+                secondary: entry.prefix.clone(),
+                jump_target: JumpTarget::HistoryIndex(real_idx),
+            });
+            count += 1;
+        }
+    }
+
+    // Commands (cap 5)
+    let commands = crate::command::filter_commands(query);
+    for cmd in commands.iter().take(5) {
+        results.push(SearchResult {
+            category: SearchCategory::Command,
+            primary: cmd.name.to_string(),
+            secondary: cmd.description.to_string(),
+            jump_target: JumpTarget::CommandName(cmd.name.to_string()),
+        });
+    }
+
+    results
+}

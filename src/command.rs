@@ -245,6 +245,11 @@ pub fn builtin_commands() -> Vec<Command> {
             "Open command history overlay (H) — recall and re-edit past inputs",
             show_history,
         ),
+        Command::new(
+            "global search",
+            "Search across all data sources — agents, messages, events, history (Ctrl-S)",
+            open_search,
+        ),
     ]
 }
 
@@ -466,6 +471,13 @@ fn show_activity(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     vec![]
 }
 
+
+fn open_search(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.search_active = true;
+    shell.search_query.clear();
+    shell.search_cursor = 0;
+    vec![]
+}
 fn show_history(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.history_overlay_active = true;
     shell.overlay_scroll = 0;

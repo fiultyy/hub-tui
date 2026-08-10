@@ -103,6 +103,12 @@ pub struct Shell {
     pub saved_input: String,
     /// 命令历史浮层激活(H 键)。
     pub history_overlay_active: bool,
+    /// 全局搜索浮层激活(Ctrl-S)。
+    pub search_active: bool,
+    /// 搜索查询输入。
+    pub search_query: String,
+    /// 搜索结果选中索引。
+    pub search_cursor: usize,
     /// 多选的 handle 集合(Space 键 toggle)。
     pub selected_set: std::collections::HashSet<String>,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
@@ -130,6 +136,9 @@ impl Shell {
             filter_query: None,
             overlay_content: None,
             overlay_scroll: 0,
+            search_active: false,
+            search_query: String::new(),
+            search_cursor: 0,
             group_detail_active: false,
             cheatsheet_active: false,
             activity_active: false,

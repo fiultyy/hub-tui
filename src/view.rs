@@ -109,6 +109,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.history_overlay_active {
         draw_history_overlay(f, model, shell, area, &theme);
     }
+    // 全局搜索浮层(Ctrl-S 激活)
+    if shell.search_active {
+        draw_search_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -982,6 +986,7 @@ fn status_hint(shell: &Shell) -> String {
         || shell.orch_tasks_active
         || shell.history_overlay_active
         || shell.activity_active
+        || shell.search_active
     {
         return " Esc/q:close j/k:scroll c:clear ".to_string();
     }
@@ -1083,6 +1088,77 @@ fn draw_command_palette(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme)
             Paragraph::new(line),
             Rect { x: inner.x, y: inner.y + 1 + i as u16, width: inner.width, height: 1 },
         );
+    }
+}
+// ───────────────────────── 全局搜索浮层 ─────────────────────────
+
+/// 全局搜索浮层: 输入查询 + 分类结果列表。
+fn draw_search_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    let results = crate::model::global_search(model, &shell.search_query);
+    let list_h = results.len().min(15) as u16;
+    let overlay_h = 1 + 1 + list_h + 1; // border + input + list + border
+    let overlay_w = (area.width * 3 / 4).max(50).min(70);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+
+    f.render_widget(Clear, overlay_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " Global Search (Esc:close Enter:jump j/k:nav) ",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    // 输入行
+    let input_line = Line::from(vec![
+        Span::styled("\u{1f50d} ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(&shell.search_query, Style::default().fg(theme.fg)),
+    ]);
+    f.render_widget(Paragraph::new(input_line), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
+
+    // 结果列表(分类标题 + 结果行)
+    let mut y = inner.y + 1;
+    let mut prev_cat: Option<&crate::model::SearchCategory> = None;
+    for (i, result) in results.iter().enumerate() {
+        if y >= inner.y + inner.height { break; }
+        // 分类标题(首次出现时显示)
+        if prev_cat != Some(&result.category) {
+            let header = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", result.category.label()),
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ),
+            ]);
+            f.render_widget(Paragraph::new(header), Rect { x: inner.x, y, width: inner.width, height: 1 });
+            y += 1;
+            prev_cat = Some(&result.category);
+        }
+        if y >= inner.y + inner.height { break; }
+
+        let selected = i == shell.search_cursor;
+        let style = if selected {
+            Style::default().fg(theme.selection_fg).bg(theme.selection_bg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        let secondary_style = if selected { style } else { Style::default().fg(theme.muted) };
+
+        let line = Line::from(vec![
+            Span::styled(format!("  {} ", result.primary), style),
+            Span::styled(
+                crate::render::truncate_width(&result.secondary, (inner.width as usize).saturating_sub(result.primary.len() + 4)),
+                secondary_style,
+            ),
+        ]);
+        f.render_widget(Paragraph::new(line), Rect { x: inner.x, y, width: inner.width, height: 1 });
+        y += 1;
     }
 }
 
