@@ -348,7 +348,7 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
 // ───────────────────────── 辅助 ─────────────────────────
 
 /// 当前 tab 对应的列表长度(用于 cursor 边界)。
-/// Directory tab: 按 directory_sorted_handles 排序(状态分区顺序)。
+/// Directory tab: 按 directory_sorted_handles 排序(worktreePath 分组 + 最近活跃)。
 #[must_use]
 fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String]> {
     match shell.tab {
