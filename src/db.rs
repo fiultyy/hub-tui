@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 3;
+const DB_VERSION: i64 = 4;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -174,7 +174,11 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS idx_input_history_ts ON input_history(ts);
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '3');
+            CREATE TABLE IF NOT EXISTS pinned_agents (
+                handle TEXT PRIMARY KEY
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '4');
             ",
         )
         .ok()?;
@@ -594,6 +598,48 @@ impl Db {
         let _ = conn.execute("DELETE FROM input_history", []);
     }
 
+    // ──── Pinned agents ────
+
+    /// 添加置顶 agent。
+    pub fn upsert_pinned(&self, handle: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO pinned_agents (handle) VALUES (?1)",
+            params![handle],
+        );
+    }
+
+    /// 移除置顶 agent。
+    pub fn remove_pinned(&self, handle: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute(
+            "DELETE FROM pinned_agents WHERE handle = ?1",
+            params![handle],
+        );
+    }
+
+    /// 加载所有置顶 agent handles。
+    pub fn load_pinned(&self) -> Vec<String> {
+        let conn = match self.conn.lock() {
+ Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        let mut stmt = match conn.prepare("SELECT handle FROM pinned_agents") {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .ok()
+            .map(|r| r.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default()
+    }
+
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -640,7 +686,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("3".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("4".to_string()));
     }
 
     #[test]

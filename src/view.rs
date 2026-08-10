@@ -327,10 +327,10 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
 
     let sorted = if shell.filter_active {
         let q = shell.filter_query.as_deref().unwrap_or("");
-        let full = directory_sorted_with_mode(&model.directory, model.sort_mode());
+        let full = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
         crate::model::directory_filter_handles(&full, &model.directory, q)
     } else {
-        directory_sorted_with_mode(&model.directory, model.sort_mode())
+        directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
     };
     let layout = directory_layout(&sorted, model, inner.x, inner.width);
     let scroll_y = directory_scroll(shell.cursor, &layout, inner.height);
@@ -352,7 +352,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                     let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h };
                     let unread = *model.unread_counts.get(&agent.handle).unwrap_or(&0);
                     let shell_sel = shell.selected_set.contains(&agent.handle);
-                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, unread);
+                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), unread);
                 }
             }
         }
@@ -499,6 +499,7 @@ fn draw_agent_card(
     theme: &Theme,
     selected: bool,
     shell_selected: bool,
+    pinned: bool,
     unread: usize,
 ) {
     use unicode_width::UnicodeWidthStr;
@@ -511,7 +512,7 @@ fn draw_agent_card(
     f.render_widget(ratatui::widgets::Clear, area);
 
     // ── row 0: source图标 + title + badge | 状态图标 + elapsed(右对齐) ──
-    let icon = if shell_selected { "\u{2713}" } else { source_icon(agent.source.as_deref()) }; // ✓ if selected
+    let icon = if pinned { "📌" } else if shell_selected { "\u{2713}" } else { source_icon(agent.source.as_deref()) };
     let cat = StatusCategory::from_agent(agent);
     let title_text = agent.title.as_deref().unwrap_or("").trim();
     let badge_str = if unread > 0 { format!(" ({unread})") } else { String::new() };
@@ -1000,7 +1001,7 @@ fn status_hint(shell: &Shell) -> String {
         return " Esc:cancel Enter:send ".to_string();
     }
     match shell.tab {
-        Tab::Directory => " j/k:nav i:input s:switch p:pty w:worktree /:filter ?:help ".to_string(),
+        Tab::Directory => " j/k:nav i:input s:switch p:pty w:worktree @:pin /:filter ?:help ".to_string(),
         Tab::Groups => " j/k:nav Enter:detail g:next Tab:switch ?:help ".to_string(),
         Tab::Messages => " j/k:nav d:del D:clear m:mark-read /:filter g:next ?:help ".to_string(),
     }

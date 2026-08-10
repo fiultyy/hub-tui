@@ -72,6 +72,10 @@ pub enum Cmd {
     PersistActivityEvent(crate::model::Event),
     /// 持久化输入历史到 SQLite。
     PersistHistoryEntry(String),
+    /// 持久化置顶 agent(添加到 pinned_agents 表)。
+    PersistPinAdd { handle: String },
+    /// 移除置顶 agent。
+    PersistPinRemove { handle: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -186,6 +190,13 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
                 .collect();
             for (handle, sev, text) in transitions {
                 cmds.push(note_event(model, sev, EventCategory::State, &handle, text));
+                // ── Pin alert: proactive toast for pinned agents ──
+                if model.pinned.contains(&handle) {
+                    if let Some(agent) = model.directory.get(&handle) {
+                        let new_cat = StatusCategory::from_agent(agent);
+                        shell.push_toast(format!("📌 {} → {}", handle, new_cat.label()));
+                    }
+                }
             }
             cmds
         }
@@ -630,11 +641,34 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             vec![]
         }
 
+        // @(Directory tab): toggle pin on selected agent
+        (KeyCode::Char('@'), KeyModifiers::NONE) if shell.tab == Tab::Directory => {
+            if let Some(handle) = selected_agent_handle(model, shell) {
+                model.toggle_pin(&handle);
+                // Cursor relock: sort changed, find handle's new position
+                let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+                if let Some(idx) = sorted.iter().position(|h| h == &handle) {
+                    shell.cursor = idx;
+                }
+                let is_pinned = model.is_pinned(&handle);
+                let action = if is_pinned { "pinned" } else { "unpinned" };
+                shell.push_toast(format!("{action}: {handle}"));
+                let cmd = if is_pinned {
+                    Cmd::PersistPinAdd { handle }
+                } else {
+                    Cmd::PersistPinRemove { handle }
+                };
+                vec![cmd]
+            } else {
+                vec![]
+            }
+        }
+
 
         // 1-9: jump to group N (Directory tab only)
         (KeyCode::Char(c @ '1'..='9'), KeyModifiers::NONE) if shell.tab == Tab::Directory => {
             let group_num = c.to_digit(10).unwrap() as usize; // 1-based
-            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
+            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
             // compute group start indices: walk sorted, find boundaries where cwd changes
             let mut group_starts: Vec<usize> = Vec::new();
             let mut prev_cwd: Option<&str> = None;
@@ -1023,7 +1057,7 @@ fn dispatch_search_jump(model: &mut Model, shell: &mut Shell) -> Vec<Cmd> {
     use crate::model::JumpTarget;
     match result.jump_target {
         JumpTarget::AgentHandle(handle) => {
-            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
+            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
             if let Some(idx) = sorted.iter().position(|h| h == &handle) {
                 shell.tab = Tab::Directory;
                 shell.cursor = idx;
@@ -1170,7 +1204,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
 fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String]> {
     match shell.tab {
         Tab::Directory => {
-            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
+            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
             if shell.filter_active {
                 let q = shell.filter_query.as_deref().unwrap_or("");
                 std::borrow::Cow::Owned(crate::model::directory_filter_handles(
@@ -1207,10 +1241,10 @@ pub fn selected_agent_handle_public(model: &Model, shell: &Shell) -> Option<Stri
 fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
     let handles: Vec<String> = if shell.filter_active && shell.tab == Tab::Directory {
         let q = shell.filter_query.as_deref().unwrap_or("");
-        let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
+        let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
         crate::model::directory_filter_handles(&sorted, &model.directory, q)
     } else {
-        directory_sorted_with_mode(&model.directory, model.sort_mode())
+        directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
     };
     handles.get(shell.cursor).cloned()
 }
@@ -1242,7 +1276,7 @@ fn hit_test_card(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<usize> 
     let inner_w = shell.size.0.saturating_sub(2);
     let inner_h = shell.size.1.saturating_sub(5);
 
-    let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
+    let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
     let layout = directory_layout(&sorted, model, inner_x, inner_w);
     let scroll_y = directory_scroll(shell.cursor, &layout, inner_h);
 
@@ -1785,5 +1819,30 @@ mod tests {
         let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
         assert!(!shell.search_active);
         assert_eq!(shell.tab, Tab::Directory);
+    }
+    #[test]
+    fn pin_toggle_test() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        // seed an agent
+        let agent = crate::model::Agent {
+            handle: "term_test".to_string(), pty_id: None, cwd: "/tmp".to_string(),
+            worktree_id: String::new(), branch: String::new(), tab_id: String::new(),
+            leaf_id: String::new(), pane_key: String::new(), title: None,
+            connected: true, writable: true, source: Some("claude".to_string()),
+            state: Some("working".to_string()), prompt: None, tool_name: None,
+            tool_input: None, last_assistant_msg: None, preview: None, last_output_at: None,
+        };
+        model.directory.insert("term_test".to_string(), agent);
+        shell.tab = Tab::Directory;
+        shell.cursor = 0;
+        // Press @ to pin
+        let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('@'))));
+        assert!(model.is_pinned("term_test"));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistPinAdd { .. })));
+        // Press @ again to unpin
+        let cmds2 = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('@'))));
+        assert!(!model.is_pinned("term_test"));
+        assert!(cmds2.iter().any(|c| matches!(c, Cmd::PersistPinRemove { .. })));
     }
 }

@@ -251,6 +251,16 @@ impl Service {
                         db.insert_history(&text);
                     }
                 }
+                crate::update::Cmd::PersistPinAdd { handle } => {
+                    if let Some(db) = &self.db {
+                        db.upsert_pinned(&handle);
+                    }
+                }
+                crate::update::Cmd::PersistPinRemove { handle } => {
+                    if let Some(db) = &self.db {
+                        db.remove_pinned(&handle);
+                    }
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }

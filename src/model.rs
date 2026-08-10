@@ -336,6 +336,8 @@ pub struct Model {
     pub orch_snapshot: Option<OrchSnapshot>,
     /// 配置 key-value store(启动从 DB 加载,运行时变更持久化)。
     pub config: HashMap<String, String>,
+    /// 置顶(pinned) agent handle 集合(持久化到 DB)。
+    pub pinned: HashSet<String>,
 }
 
 impl Model {
@@ -352,6 +354,7 @@ impl Model {
             worktree_ps: Vec::new(),
             orch_snapshot: None,
             config: HashMap::new(),
+            pinned: HashSet::new(),
         }
     }
 
@@ -469,6 +472,25 @@ impl Model {
     pub fn clear_events(&mut self) {
         self.events.clear();
         self.generation += 1;
+    }
+
+    // ──── Pin(置顶)────
+
+    /// agent 是否被置顶。
+    pub fn is_pinned(&self, handle: &str) -> bool {
+        self.pinned.contains(handle)
+    }
+
+    /// 切换置顶状态(insert/remove)。
+    pub fn toggle_pin(&mut self, handle: &str) {
+        if !self.pinned.remove(handle) {
+            self.pinned.insert(handle.to_string());
+        }
+    }
+
+    /// 启动时从 DB 加载置顶集合(替换)。
+    pub fn apply_pinned(&mut self, handles: Vec<String>) {
+        self.pinned = handles.into_iter().collect();
     }
 
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
@@ -637,14 +659,28 @@ impl SortMode {
 
 /// Directory 排序: 按 sort_mode 选择策略, 保证 cursor/导航/hit_test 一致性。
 pub fn directory_sorted_handles(directory: &HashMap<String, Agent>) -> Vec<String> {
-    directory_sorted_with_mode(directory, SortMode::ByWorktree)
+    directory_sorted_with_mode(directory, SortMode::ByWorktree, &HashSet::new())
 }
 
-/// 带排序模式的版本。
+/// 带排序模式的版本(pinned 分区: 置顶 agent 排最前)。
 pub fn directory_sorted_with_mode(
     directory: &HashMap<String, Agent>,
     mode: SortMode,
+    pinned: &HashSet<String>,
 ) -> Vec<String> {
+    let sorted = sort_directory_inner(directory, mode);
+    if pinned.is_empty() {
+        return sorted;
+    }
+    // 分区: pinned 在前, 其余在后, 各自保持原排序
+    let mut result = Vec::with_capacity(sorted.len());
+    result.extend(sorted.iter().filter(|h| pinned.contains(h.as_str())).cloned());
+    result.extend(sorted.iter().filter(|h| !pinned.contains(h.as_str())).cloned());
+    result
+}
+
+/// 原始排序逻辑(无 pinned 分区)。
+fn sort_directory_inner(directory: &HashMap<String, Agent>, mode: SortMode) -> Vec<String> {
     let mut entries: Vec<&Agent> = directory.values().collect();
 
     match mode {
