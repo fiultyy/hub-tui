@@ -121,6 +121,10 @@ pub struct Shell {
     pub replay_queue: Vec<crossterm::event::KeyEvent>,
     /// Saved Views 浮层激活(V 键)。
     pub views_overlay_active: bool,
+    /// Metrics 浮层激活(x 键)。
+    pub metrics_overlay_active: bool,
+    /// Metrics 时间窗口(浮层内 w 键切换)。
+    pub metrics_window: crate::model::MetricsWindow,
     /// 全局搜索浮层激活(Ctrl-S)。
     pub search_active: bool,
     /// 搜索查询输入。
@@ -175,6 +179,8 @@ impl Shell {
             recording_name: String::new(),
             replay_queue: Vec::new(),
             views_overlay_active: false,
+            metrics_overlay_active: false,
+            metrics_window: crate::model::MetricsWindow::OneHour,
             selected_set: std::collections::HashSet::new(),
             theme_name: "default".to_string(),
             generation: 0,

@@ -404,7 +404,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -521,6 +521,13 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('V'), KeyModifiers::SHIFT) if !shell.insert_mode => {
             shell.views_overlay_active = !shell.views_overlay_active;
             if shell.views_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+
+        // x: agent metrics overlay (toggle)
+        (KeyCode::Char('x'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.metrics_overlay_active = !shell.metrics_overlay_active;
+            if shell.metrics_overlay_active { shell.overlay_scroll = 0; }
             return vec![];
         }
 
@@ -1549,6 +1556,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.snippet_overlay_active = false;
             shell.macro_overlay_active = false;
             shell.views_overlay_active = false;
+            shell.metrics_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
@@ -1655,6 +1663,12 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                 shell.overlay_scroll = 0;
                 return vec![Cmd::RemoveView { name }];
             }
+            vec![]
+        }
+        // ── Metrics overlay: w cycles time window ──
+        (KeyCode::Char('w'), KeyModifiers::NONE) if shell.metrics_overlay_active => {
+            shell.metrics_window = shell.metrics_window.cycle();
+            shell.overlay_scroll = 0;
             vec![]
         }
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {

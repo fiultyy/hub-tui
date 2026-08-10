@@ -1500,3 +1500,156 @@ pub struct ViewSnapshot {
     /// 创建时间(epoch ms)。
     pub created_at_ms: i64,
 }
+
+// ───────────────────────── Agent Metrics(指标趋势) ─────────────────────────
+
+/// 指标时间窗口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricsWindow {
+    FiveMin,
+    ThirtyMin,
+    OneHour,
+}
+
+impl MetricsWindow {
+    pub fn as_ms(&self) -> i64 {
+        match self {
+            Self::FiveMin => 300_000,
+            Self::ThirtyMin => 1_800_000,
+            Self::OneHour => 3_600_000,
+        }
+    }
+
+    pub fn as_label(&self) -> &'static str {
+        match self {
+            Self::FiveMin => "5m",
+            Self::ThirtyMin => "30m",
+            Self::OneHour => "1h",
+        }
+    }
+
+    pub fn cycle(&self) -> Self {
+        match self {
+            Self::FiveMin => Self::ThirtyMin,
+            Self::ThirtyMin => Self::OneHour,
+            Self::OneHour => Self::FiveMin,
+        }
+    }
+
+    /// (bucket_count, bucket_ms) — 用于时间线分桶。
+    pub fn buckets(&self) -> (usize, i64) {
+        match self {
+            Self::FiveMin => (10, 30_000),    // 10 buckets × 30s
+            Self::ThirtyMin => (30, 60_000),  // 30 buckets × 1m
+            Self::OneHour => (60, 60_000),    // 60 buckets × 1m
+        }
+    }
+}
+
+/// 单 agent 指标摘要。
+#[derive(Debug, Clone)]
+pub struct AgentMetrics {
+    pub handle: String,
+    pub total_events: usize,
+    pub by_category: [usize; 5],
+    pub by_severity: [usize; 3],
+    pub timeline: Vec<u64>,
+}
+
+/// 全局指标快照(浮层渲染用)。
+#[derive(Debug, Clone)]
+pub struct MetricsSnapshot {
+    pub window: MetricsWindow,
+    pub agents: Vec<AgentMetrics>,
+    pub category_totals: [usize; 5],
+    pub severity_totals: [usize; 3],
+    pub global_timeline: Vec<u64>,
+}
+
+fn cat_to_idx(cat: &EventCategory) -> usize {
+    match cat {
+        EventCategory::Agent => 0,
+        EventCategory::State => 1,
+        EventCategory::Message => 2,
+        EventCategory::Group => 3,
+        EventCategory::System => 4,
+    }
+}
+
+fn sev_to_idx(sev: &EventSeverity) -> usize {
+    match sev {
+        EventSeverity::Info => 0,
+        EventSeverity::Warn => 1,
+        EventSeverity::Error => 2,
+    }
+}
+
+/// 从内存事件队列计算指标快照。纯函数, 无 IO。
+pub fn compute_agent_metrics(model: &Model, window: MetricsWindow) -> MetricsSnapshot {
+    let now = now_ms();
+    let window_ms = window.as_ms();
+    let cutoff = now - window_ms;
+    let (bucket_count, bucket_ms) = window.buckets();
+
+    let window_events: Vec<&Event> = model.events.iter()
+        .filter(|e| e.timestamp_ms > cutoff)
+        .collect();
+
+    // 全局时间线
+    let mut global_timeline = vec![0u64; bucket_count];
+    for ev in &window_events {
+        let age = now.saturating_sub(ev.timestamp_ms);
+        let idx = ((window_ms - age) / bucket_ms) as usize;
+        if idx < bucket_count {
+            global_timeline[idx] += 1;
+        }
+    }
+
+    // 收集 agent handle
+    let mut handles: std::collections::HashSet<String> = window_events.iter()
+        .filter(|e| e.source != "system")
+        .map(|e| e.source.clone())
+        .collect();
+    for h in model.directory.keys() {
+        handles.insert(h.clone());
+    }
+
+    // 每 agent 指标
+    let mut agents: Vec<AgentMetrics> = handles.into_iter().map(|handle| {
+        let mut m = AgentMetrics {
+            handle: handle.clone(),
+            total_events: 0,
+            by_category: [0; 5],
+            by_severity: [0; 3],
+            timeline: vec![0u64; bucket_count],
+        };
+        for ev in &window_events {
+            if ev.source == handle {
+                m.total_events += 1;
+                m.by_category[cat_to_idx(&ev.category)] += 1;
+                m.by_severity[sev_to_idx(&ev.severity)] += 1;
+                let age = now.saturating_sub(ev.timestamp_ms);
+                let idx = ((window_ms - age) / bucket_ms) as usize;
+                if idx < bucket_count {
+                    m.timeline[idx] += 1;
+                }
+            }
+        }
+        m
+    }).collect();
+
+    // 按活跃度降序
+    agents.sort_by(|a, b| b.total_events.cmp(&a.total_events));
+
+    // 全局 totals
+    let mut category_totals = [0usize; 5];
+    let mut severity_totals = [0usize; 3];
+    for ev in &window_events {
+        category_totals[cat_to_idx(&ev.category)] += 1;
+        severity_totals[sev_to_idx(&ev.severity)] += 1;
+    }
+
+    MetricsSnapshot {
+        window, agents, category_totals, severity_totals, global_timeline,
+    }
+}

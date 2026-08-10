@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::model::{directory_sorted_with_mode, EventCategory, EventSeverity, Model, StatusCategory};
+use crate::model::{directory_sorted_with_mode, AgentMetrics, EventCategory, EventSeverity, Model, StatusCategory};
 use crate::render::blocks;
 use crate::render::theme::Theme;
 use crate::shell::{ConnState, Shell, Tab};
@@ -132,6 +132,9 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     // Saved Views 浮层
     if shell.views_overlay_active {
         draw_views_overlay(f, model, shell, area, &theme);
+    }
+    if shell.metrics_overlay_active {
+        draw_metrics_overlay(f, model, shell, area, &theme);
     }
 }
 
@@ -2122,6 +2125,123 @@ fn draw_views_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, t
     let inner = block.inner(overlay_area);
     f.render_widget(block, overlay_area);
 
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+// ───────────────────────── Agent Metrics 浮层 ─────────────────────────
+
+/// Unicode block char for sparkline: maps val/max to ▁▂▃▄▅▆▇█.
+fn sparkline_char(val: u64, max: u64) -> char {
+    if max == 0 { return ' '; }
+    let ratio = val as f64 / max as f64;
+    match ratio {
+        r if r > 0.875 => '█',
+        r if r > 0.75 => '▇',
+        r if r > 0.625 => '▆',
+        r if r > 0.5 => '▅',
+        r if r > 0.375 => '▄',
+        r if r > 0.25 => '▃',
+        r if r > 0.125 => '▂',
+        r if r > 0.0 => '▁',
+        _ => ' ',
+    }
+}
+
+/// Agent Metrics & Trends overlay: timeline sparkline, category/severity breakdown, top agents.
+fn draw_metrics_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+
+    let snap = crate::model::compute_agent_metrics(model, shell.metrics_window);
+    let total_events: usize = snap.category_totals.iter().sum();
+    let mut lines: Vec<Line> = Vec::new();
+
+    if total_events == 0 {
+        lines.push(Line::from(Span::styled(
+            " No events in this window yet.",
+            Style::default().fg(theme.muted),
+        )));
+    } else {
+        // Header
+        lines.push(Line::from(vec![
+            Span::styled("Window: ", Style::default().fg(theme.accent)),
+            Span::styled(snap.window.as_label().to_string(), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+            Span::styled("    Events: ", Style::default().fg(theme.accent)),
+            Span::styled(format!("{total_events}"), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+            Span::styled("    Agents active: ", Style::default().fg(theme.accent)),
+            Span::styled(format!("{}", snap.agents.len()), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(""));
+
+        // Global timeline sparkline
+        let gt_max = snap.global_timeline.iter().copied().max().unwrap_or(0);
+        let sparkline: String = snap.global_timeline.iter().map(|&v| sparkline_char(v, gt_max)).collect();
+        lines.push(Line::from(vec![
+            Span::styled("Timeline: ", Style::default().fg(theme.accent)),
+            Span::styled(sparkline, Style::default().fg(theme.fg)),
+        ]));
+        lines.push(Line::from(""));
+
+        // Category breakdown
+        let cat_names = ["Agent", "State", "Message", "Group", "System"];
+        let cat_spans: Vec<Span> = cat_names.iter().zip(snap.category_totals.iter()).map(|(name, &count)| {
+            Span::styled(format!("{name}: {count}  "), Style::default().fg(theme.fg))
+        }).collect();
+        lines.push(Line::from(vec![
+            Span::styled("Categories  ", Style::default().fg(theme.accent)),
+        ].into_iter().chain(cat_spans).collect::<Vec<_>>()));
+        lines.push(Line::from(""));
+
+        // Severity breakdown
+        lines.push(Line::from(vec![
+            Span::styled("Severity    ", Style::default().fg(theme.accent)),
+            Span::styled(format!("Info: {}  ", snap.severity_totals[0]), Style::default().fg(theme.fg)),
+            Span::styled(format!("Warn: {}  ", snap.severity_totals[1]), Style::default().fg(theme.warn)),
+            Span::styled(format!("Error: {}", snap.severity_totals[2]), Style::default().fg(theme.error)),
+        ]));
+        lines.push(Line::from(""));
+
+        // Top agents (already sorted desc by total_events in snapshot)
+        lines.push(Line::from(Span::styled(
+            "Top Agents", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        )));
+        let top: Vec<&AgentMetrics> = snap.agents.iter().take(5).collect();
+        if top.is_empty() {
+            lines.push(Line::from(Span::styled("  (none)", Style::default().fg(theme.muted))));
+        } else {
+            for a in top {
+                let tl_max = a.timeline.iter().copied().max().unwrap_or(0);
+                let mini: String = a.timeline.iter().map(|&v| sparkline_char(v, tl_max)).collect();
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}: ", a.handle), Style::default().fg(theme.accent)),
+                    Span::styled(format!("{} events ", a.total_events), Style::default().fg(theme.fg)),
+                    Span::styled(mini, Style::default().fg(theme.muted)),
+                ]));
+            }
+        }
+    }
+
+    // 尺寸 + 居中(同 dashboard overlay pattern)
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+    f.render_widget(Clear, overlay_area);
+    let title = " Metrics (w:window x/Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(
+            Span::styled(
+                title,
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+        );
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
     let visible_h = inner.height as usize;
     let total = lines.len();
     let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
