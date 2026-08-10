@@ -130,7 +130,18 @@ impl Service {
                         }
                     });
                 }
-                _ => {} // 其余 Cmd variant 后续 Node 处理
+                crate::update::Cmd::SwitchTerminal { handle } => {
+                    let lock = Arc::clone(&self.cli_lock);
+                    thread::spawn(move || {
+                        let _guard = lock.lock();
+                        let _ = std::process::Command::new("orca-ide")
+                            .args(["terminal", "switch", "--terminal", &handle])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    });
+                }
+                _ => {}
             }
         }
     }

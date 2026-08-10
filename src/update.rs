@@ -33,6 +33,8 @@ pub enum Cmd {
     WriteDirectory,
     /// socket 查询处理(ADR-3)。
     QuerySocket { req: crate::msg::SocketReq },
+    /// spawn: `orca terminal switch --terminal <handle>` 激活 tab。
+    SwitchTerminal { handle: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -258,10 +260,19 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             if let Some(handle) = selected_handle {
                 shell.insert_mode = true;
                 shell.focus = FocusTarget::Input;
-                // 预填 "to:" 提示(实际 send 在 Enter of input_mode)
                 shell.input_buf = format!("to:{handle} ");
             }
             vec![]
+        }
+        // s(in Directory tab): switch/activate selected agent's tab
+        (KeyCode::Char('s'), KeyModifiers::NONE) => {
+            let selected_handle = selected_agent_handle(model, shell);
+            if let Some(handle) = selected_handle {
+                shell.push_toast(format!("switching to {}", &handle[..handle.len().min(20)]));
+                vec![Cmd::SwitchTerminal { handle }]
+            } else {
+                vec![]
+            }
         }
 
         _ => vec![],

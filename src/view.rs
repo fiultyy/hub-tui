@@ -431,7 +431,7 @@ fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     } else {
         // 非 insert_mode: 提示
         let hint = match shell.tab {
-            Tab::Directory => "i:send  j/k:navigate  Enter:select  g:groups",
+            Tab::Directory => "i:send  j/k:nav  Enter:select  s:switch  g:groups",
             Tab::Groups => "i:send  j/k:navigate  g:messages",
             Tab::Messages => "i:send  j/k:navigate  g:directory",
         };
