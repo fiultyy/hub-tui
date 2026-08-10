@@ -261,6 +261,16 @@ impl Service {
                         db.remove_pinned(&handle);
                     }
                 }
+                crate::update::Cmd::PersistTagAdd { handle, tag } => {
+                    if let Some(db) = &self.db {
+                        db.upsert_tag(&handle, &tag);
+                    }
+                }
+                crate::update::Cmd::PersistTagRemove { handle, tag } => {
+                    if let Some(db) = &self.db {
+                        db.remove_tag(&handle, &tag);
+                    }
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }

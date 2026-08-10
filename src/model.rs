@@ -338,6 +338,8 @@ pub struct Model {
     pub config: HashMap<String, String>,
     /// 置顶(pinned) agent handle 集合(持久化到 DB)。
     pub pinned: HashSet<String>,
+    /// Agent 标签: handle → tag set(持久化到 DB)。
+    pub tags: HashMap<String, HashSet<String>>,
 }
 
 impl Model {
@@ -352,6 +354,7 @@ impl Model {
             pending_status: HashMap::new(),
             unread_counts: HashMap::new(),
             worktree_ps: Vec::new(),
+            tags: HashMap::new(),
             orch_snapshot: None,
             config: HashMap::new(),
             pinned: HashSet::new(),
@@ -493,6 +496,36 @@ impl Model {
         self.pinned = handles.into_iter().collect();
     }
 
+
+    // ──── Tags(标签)────
+
+    /// 启动时从 DB 加载标签(替换)。
+    pub fn apply_tags(&mut self, tags: HashMap<String, HashSet<String>>) {
+        self.tags = tags;
+        self.generation += 1;
+    }
+
+    /// 为 agent 添加标签(去重)。
+    pub fn add_tag(&mut self, handle: &str, tag: &str) {
+        self.tags.entry(handle.to_string()).or_default().insert(tag.to_string());
+        self.generation += 1;
+    }
+
+    /// 移除 agent 的标签; 标签集空时移除 handle 条目。
+    pub fn remove_tag(&mut self, handle: &str, tag: &str) {
+        if let Some(set) = self.tags.get_mut(handle) {
+            set.remove(tag);
+            if set.is_empty() {
+                self.tags.remove(handle);
+            }
+        }
+        self.generation += 1;
+    }
+
+    /// agent 是否拥有指定标签。
+    pub fn has_tag(&self, handle: &str, tag: &str) -> bool {
+        self.tags.get(handle).map_or(false, |s| s.contains(tag))
+    }
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
     pub fn push_history(&mut self, text: String) {
         let prefix = text.split_once(':').map(|(p, _)| format!("{p}:")).unwrap_or_default();
@@ -765,6 +798,7 @@ pub fn directory_filter_handles(
     sorted: &[String],
     directory: &HashMap<String, Agent>,
     query: &str,
+    tags: &HashMap<String, HashSet<String>>,
 ) -> Vec<String> {
     if query.is_empty() {
         return sorted.to_vec();
@@ -785,11 +819,15 @@ pub fn directory_filter_handles(
                 Some(a) => a,
                 None => return false,
             };
-            let target = match field {
-                Some("source") => agent.source.as_deref().unwrap_or(""),
-                Some("state") => agent.effective_state(),
-                Some("cwd") | Some("path") | Some("worktree") => &agent.cwd,
-                Some("title") => agent.title.as_deref().unwrap_or(""),
+            match field {
+                Some("source") => agent.source.as_deref().unwrap_or("").to_ascii_lowercase().contains(&value_lower),
+                Some("state") => agent.effective_state().to_ascii_lowercase().contains(&value_lower),
+                Some("cwd") | Some("path") | Some("worktree") => agent.cwd.to_ascii_lowercase().contains(&value_lower),
+                Some("title") => agent.title.as_deref().unwrap_or("").to_ascii_lowercase().contains(&value_lower),
+                Some("tag") => {
+                    // tag:tagname → agent 拥有该标签(精确匹配, 大小写不敏感)
+                    tags.get(*h).map_or(false, |s| s.iter().any(|t| t.eq_ignore_ascii_case(value)))
+                }
                 _ => {
                     // 无前缀: 跨维度模糊匹配
                     let combined = format!(
@@ -799,10 +837,9 @@ pub fn directory_filter_handles(
                         agent.effective_state(),
                         agent.cwd,
                     );
-                    return crate::command::fuzzy_match(value, &combined);
+                    crate::command::fuzzy_match(value, &combined)
                 }
-            };
-            target.to_ascii_lowercase().contains(&value_lower)
+            }
         })
         .cloned()
         .collect()
@@ -920,10 +957,14 @@ pub fn global_search(model: &Model, query: &str) -> Vec<SearchResult> {
         let title = agent.title.as_deref().unwrap_or("");
         let source = agent.source.as_deref().unwrap_or("");
         let state = agent.state.as_deref().unwrap_or("");
+        let tags_str = model.tags.get(&agent.handle)
+            .map(|s| s.iter().cloned().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
         if crate::command::fuzzy_match(&q, &agent.handle)
             || crate::command::fuzzy_match(&q, title)
             || crate::command::fuzzy_match(&q, &agent.cwd)
             || crate::command::fuzzy_match(&q, source)
+            || crate::command::fuzzy_match(&q, &tags_str)
         {
             results.push(SearchResult {
                 category: SearchCategory::Agent,
@@ -1023,6 +1064,8 @@ pub struct ModelSnapshot {
     /// 最近 60 秒事件数(活跃度指标)。
     pub event_recent_60s: usize,
     pub computed_at_ms: i64,
+    /// Top-5 tags by agent count (Dashboard 标签分布)。
+    pub tag_counts: Vec<(String, usize)>,
 }
 
 /// 计算 Dashboard 快照。纯计算, 无 IO。
@@ -1070,6 +1113,17 @@ pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
         }
     }
 
+    // Tag 分布: top-5 by agent count
+    let mut tag_counts_map: HashMap<String, usize> = HashMap::new();
+    for tags_set in model.tags.values() {
+        for tag in tags_set {
+            *tag_counts_map.entry(tag.clone()).or_insert(0) += 1;
+        }
+    }
+    let mut tag_counts: Vec<(String, usize)> = tag_counts_map.into_iter().collect();
+    tag_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    tag_counts.truncate(5);
+
     ModelSnapshot {
         agent_total: model.directory.len(),
         status_counts,
@@ -1084,6 +1138,7 @@ pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
         ],
         event_by_category,
         group_count: model.groups.len(),
+        tag_counts,
         pinned_count: pinned_in_dir,
         history_count: model.history.len(),
         event_recent_60s,

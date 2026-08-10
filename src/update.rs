@@ -76,6 +76,10 @@ pub enum Cmd {
     PersistPinAdd { handle: String },
     /// 移除置顶 agent。
     PersistPinRemove { handle: String },
+    /// 持久化标签(添加到 agent_tags 表)。
+    PersistTagAdd { handle: String, tag: String },
+    /// 移除标签。
+    PersistTagRemove { handle: String, tag: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -866,6 +870,33 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![Cmd::OrchestrationReply { id: id.to_string(), body: body.to_string() }];
     }
 
+    // tag:add:handle tagname / tag:rm:handle tagname / tag:handle tagname (default add)
+    if let Some(rest) = buf.strip_prefix("tag:") {
+        let (action, rest2) = if let Some(r) = rest.strip_prefix("add:") { ("add", r) }
+            else if let Some(r) = rest.strip_prefix("rm:") { ("rm", r) }
+            else { ("add", rest) };
+        if let Some((handle, tag)) = rest2.split_once(' ') {
+            let tag = tag.trim().to_string();
+            if !tag.is_empty() {
+                match action {
+                    "add" => {
+                        model.add_tag(handle, &tag);
+                        shell.push_toast(format!("tagged {handle} +{tag}"));
+                        return vec![Cmd::PersistTagAdd { handle: handle.to_string(), tag }];
+                    }
+                    "rm" => {
+                        model.remove_tag(handle, &tag);
+                        shell.push_toast(format!("untagged {handle} -{tag}"));
+                        return vec![Cmd::PersistTagRemove { handle: handle.to_string(), tag }];
+                    }
+                    _ => {}
+                }
+            }
+        }
+        shell.push_toast("tag: usage: tag:[add|rm]:handle tagname".into());
+        return vec![];
+    }
+
     // 解析 "batch:<handles-comma> <message>" 格式(批量发送)
     if let Some((handles_str, msg)) = buf.strip_prefix("batch:").and_then(|s| s.split_once(' ')) {
         if msg.is_empty() {
@@ -877,6 +908,24 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             to: h,
             subject: msg.to_string(),
             body: String::new(),
+        }).collect();
+    }
+
+    // tagged:<tagname> <message> — send to all agents with given tag
+    if let Some((tag, msg)) = buf.strip_prefix("tagged:").and_then(|s| s.split_once(' ')) {
+        let tag = tag.trim();
+        if tag.is_empty() || msg.is_empty() { return vec![]; }
+        let handles: Vec<String> = model.tags.iter()
+            .filter(|(_, tags)| tags.iter().any(|t| t == tag))
+            .map(|(h, _)| h.clone())
+            .collect();
+        if handles.is_empty() {
+            shell.push_toast(format!("no agents tagged '{tag}'"));
+            return vec![];
+        }
+        shell.push_toast(format!("tagged batch to {} agents ({tag})", handles.len()));
+        return handles.into_iter().map(|h| Cmd::OrchestrationSend {
+            to: h, subject: msg.to_string(), body: String::new(),
         }).collect();
     }
 
@@ -1221,6 +1270,7 @@ fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String
                     &sorted,
                     &model.directory,
                     q,
+                    &model.tags,
                 ))
             } else {
                 std::borrow::Cow::Owned(sorted)
@@ -1252,7 +1302,7 @@ fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
     let handles: Vec<String> = if shell.filter_active && shell.tab == Tab::Directory {
         let q = shell.filter_query.as_deref().unwrap_or("");
         let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
-        crate::model::directory_filter_handles(&sorted, &model.directory, q)
+        crate::model::directory_filter_handles(&sorted, &model.directory, q, &model.tags)
     } else {
         directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
     };
@@ -1867,5 +1917,21 @@ mod tests {
         // Esc closes
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Esc)));
         assert!(!shell.dashboard_active);
+    }
+    #[test]
+    fn tag_add_and_remove() {
+        let mut model = Model::new();
+        model.directory.insert("term_a".to_string(), crate::model::Agent {
+            handle: "term_a".to_string(), pty_id: None, cwd: "/tmp".to_string(),
+            worktree_id: String::new(), branch: String::new(), tab_id: String::new(),
+            leaf_id: String::new(), pane_key: String::new(), title: None,
+            connected: true, writable: true, source: None, state: None,
+            prompt: None, tool_name: None, tool_input: None, last_assistant_msg: None,
+            preview: None, last_output_at: None,
+        });
+        model.add_tag("term_a", "frontend");
+        assert!(model.has_tag("term_a", "frontend"));
+        model.remove_tag("term_a", "frontend");
+        assert!(!model.has_tag("term_a", "frontend"));
     }
 }

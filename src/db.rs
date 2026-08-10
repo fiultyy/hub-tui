@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 4;
+const DB_VERSION: i64 = 5;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -178,7 +178,13 @@ impl Db {
                 handle TEXT PRIMARY KEY
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '4');
+            CREATE TABLE IF NOT EXISTS agent_tags (
+                handle TEXT NOT NULL,
+                tag    TEXT NOT NULL,
+                PRIMARY KEY (handle, tag)
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '5');
             ",
         )
         .ok()?;
@@ -640,6 +646,52 @@ impl Db {
             .unwrap_or_default()
     }
 
+    // ──── Agent tags ────
+
+    /// 添加标签(幂等)。
+    pub fn upsert_tag(&self, handle: &str, tag: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO agent_tags (handle, tag) VALUES (?1, ?2)",
+            params![handle, tag],
+        );
+    }
+
+    /// 移除标签。
+    pub fn remove_tag(&self, handle: &str, tag: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute(
+            "DELETE FROM agent_tags WHERE handle = ?1 AND tag = ?2",
+            params![handle, tag],
+        );
+    }
+
+    /// 加载所有标签 → handle → tag set。
+    pub fn load_tags(&self) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut stmt = match conn.prepare("SELECT handle, tag FROM agent_tags") {
+            Ok(s) => s,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+        let _ = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| {
+                for row in rows.flatten() {
+                    map.entry(row.0).or_default().insert(row.1);
+                }
+            });
+        map
+    }
+
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -686,7 +738,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("4".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("5".to_string()));
     }
 
     #[test]

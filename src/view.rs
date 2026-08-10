@@ -332,7 +332,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     let sorted = if shell.filter_active {
         let q = shell.filter_query.as_deref().unwrap_or("");
         let full = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
-        crate::model::directory_filter_handles(&full, &model.directory, q)
+        crate::model::directory_filter_handles(&full, &model.directory, q, &model.tags)
     } else {
         directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
     };
@@ -356,7 +356,12 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                     let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h };
                     let unread = *model.unread_counts.get(&agent.handle).unwrap_or(&0);
                     let shell_sel = shell.selected_set.contains(&agent.handle);
-                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), unread);
+                    let tags: Vec<String> = model.tags.get(&agent.handle).map(|s| {
+                        let mut v: Vec<String> = s.iter().cloned().collect();
+                        v.sort();
+                        v
+                    }).unwrap_or_default();
+                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread);
                 }
             }
         }
@@ -504,6 +509,7 @@ fn draw_agent_card(
     selected: bool,
     shell_selected: bool,
     pinned: bool,
+    tags: &[String],
     unread: usize,
 ) {
     use unicode_width::UnicodeWidthStr;
@@ -522,10 +528,16 @@ fn draw_agent_card(
     let badge_str = if unread > 0 { format!(" ({unread})") } else { String::new() };
     let elapsed = format_elapsed(agent.last_output_at);
     let right_part = format!("{} {}", cat.icon(), if elapsed.is_empty() { String::new() } else { elapsed });
+    let tag_badge = if let Some(first_tag) = tags.first() {
+        format!(" [{}]", first_tag)
+    } else {
+        String::new()
+    };
+    let tag_badge_w = UnicodeWidthStr::width(tag_badge.as_str());
     let right_w = UnicodeWidthStr::width(right_part.as_str()) + 1; // +1 for gap
     let badge_w = UnicodeWidthStr::width(badge_str.as_str());
     let icon_w = UnicodeWidthStr::width(icon) + 1; // icon + space
-    let title_max = avail.saturating_sub(icon_w + badge_w + right_w);
+    let title_max = avail.saturating_sub(icon_w + badge_w + tag_badge_w + right_w);
     let title_trunc = if !title_text.is_empty() && title_max > 2 {
         crate::render::truncate_width(title_text, title_max)
     } else {
@@ -543,6 +555,12 @@ fn draw_agent_card(
         row0_spans.push(Span::styled(
             badge_str,
             Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if !tag_badge.is_empty() {
+        row0_spans.push(Span::styled(
+            tag_badge,
+            Style::default().fg(theme.accent),
         ));
     }
     row0_spans.push(Span::styled(" ", Style::default()));
@@ -1742,6 +1760,15 @@ fn draw_dashboard_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rec
     ]));
     lines.push(Line::from(Span::styled(format!("  Rate: {} events/60s", snap.event_recent_60s), Style::default().fg(theme.muted))));
     lines.push(Line::from(""));
+    // 🏷 Tags section
+    if !snap.tag_counts.is_empty() {
+        lines.push(Line::from(Span::styled("🏷 Tags", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+        let tag_line = Line::from(snap.tag_counts.iter().map(|(tag, cnt)| {
+            Span::styled(format!("  {}: {} ", tag, cnt), Style::default().fg(theme.fg))
+        }).collect::<Vec<_>>());
+        lines.push(tag_line);
+        lines.push(Line::from(""));
+    }
 
     // Summary row: 📌 👥 ⌘
     lines.push(Line::from(vec![

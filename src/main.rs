@@ -68,6 +68,8 @@ fn main() -> io::Result<()> {
         mdl.apply_history(history);
         let pinned = svc.db.as_ref().map(|db| db.load_pinned()).unwrap_or_default();
         mdl.apply_pinned(pinned);
+        let tags = svc.db.as_ref().map(|db| db.load_tags()).unwrap_or_default();
+        mdl.apply_tags(tags);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 
