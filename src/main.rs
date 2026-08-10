@@ -75,6 +75,7 @@ fn main() -> io::Result<()> {
         update::Cmd::RefreshAgents,
         update::Cmd::RefreshStatus,
         update::Cmd::DrainMessages,
+        update::Cmd::RefreshUnread,
     ]);
 
     run_loop(&mut term, &rx, &model, &mut shell, &mut svc, &tx)

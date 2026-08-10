@@ -176,6 +176,19 @@ impl Service {
                         }
                     });
                 }
+                crate::update::Cmd::RefreshUnread => {
+                    let tx = self.tx.clone();
+                    let lock = Arc::clone(&self.cli_lock);
+                    thread::spawn(move || {
+                        let _guard = lock.lock();
+                        match transport::orchestration_inbox_unread() {
+                            Ok(counts) => {
+                                let _ = tx.send(AppMsg::UnreadUpdated(counts));
+                            }
+                            Err(_) => {}
+                        }
+                    });
+                }
                 crate::update::Cmd::WriteDirectory => {
                     // Stub: main.rs writes hub-directory.json directly.
                 }

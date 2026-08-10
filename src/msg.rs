@@ -54,6 +54,8 @@ pub enum AppMsg {
     SendFailed(String),
     /// orchestration inbox drain 完成(ADR-4)。
     MessagesDrained(Vec<crate::model::OrchMessage>),
+    /// orchestration inbox 全量未读数刷新(handle → count)。
+    UnreadUpdated(std::collections::HashMap<String, usize>),
     /// socket 查询请求(来自 agent 连接)。
     SocketQuery(SocketReq),
     /// 通用错误。

@@ -292,7 +292,8 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                 if let Some(agent) = sorted.get(*sorted_idx).and_then(|h| model.directory.get(h)) {
                     let is_selected = *sorted_idx == shell.cursor;
                     let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h };
-                    draw_agent_card(f, agent, card_area, theme, is_selected);
+                    let unread = *model.unread_counts.get(&agent.handle).unwrap_or(&0);
+                    draw_agent_card(f, agent, card_area, theme, is_selected, unread);
                 }
             }
         }
@@ -338,6 +339,7 @@ fn draw_agent_card(
     area: Rect,
     theme: &Theme,
     selected: bool,
+    unread: usize,
 ) {
     use unicode_width::UnicodeWidthStr;
 
@@ -360,15 +362,23 @@ fn draw_agent_card(
     // ── line 1: 竖条 + handle + title ──
     let handle_display = crate::render::truncate_width(&agent.handle, avail - indent - 1);
     let handle_w = UnicodeWidthStr::width(handle_display.as_str());
-    let title_text = agent.title.as_deref().unwrap_or("").trim();
     let remaining = avail.saturating_sub(indent + handle_w);
-    let title_trunc = if !title_text.is_empty() && remaining > 2 {
-        crate::render::truncate_width(title_text, remaining)
+    let title_text = agent.title.as_deref().unwrap_or("").trim();
+    // 未读 badge: 如果有未读,在 title 之前插入红色计数
+    let badge_str = if unread > 0 {
+        format!(" ({unread})")
+    } else {
+        String::new()
+    };
+    let badge_w = UnicodeWidthStr::width(badge_str.as_str());
+    let title_max = remaining.saturating_sub(badge_w);
+    let title_trunc = if !title_text.is_empty() && title_max > 2 {
+        crate::render::truncate_width(title_text, title_max)
     } else {
         String::new()
     };
     let title_w = UnicodeWidthStr::width(title_trunc.as_str());
-    let pad_w = remaining.saturating_sub(title_w);
+    let pad_w = title_max.saturating_sub(title_w);
 
     let line1 = Line::from(vec![
         Span::styled("▌", Style::default().fg(bar_fg).bg(bg)),
@@ -382,6 +392,7 @@ fn draw_agent_card(
         ),
         Span::styled(" ".repeat(pad_w), bg_style),
         Span::styled(title_trunc, Style::default().fg(theme.muted).bg(bg)),
+        Span::styled(badge_str, Style::default().fg(theme.error).bg(bg).add_modifier(Modifier::BOLD)),
     ]);
 
     // ── line 2: cwd ──

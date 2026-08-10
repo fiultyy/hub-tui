@@ -30,6 +30,8 @@ pub enum Cmd {
     },
     /// spawn: `orca orchestration check --json` drain inbox(ADR-4)。
     DrainMessages,
+    /// spawn: `orca-ide orchestration inbox --json` 刷新全量未读数。
+    RefreshUnread,
     /// 写 `~/.orca/hub-directory.json` 快照(ADR-6)。
     WriteDirectory,
     /// socket 查询处理(ADR-3)。
@@ -100,6 +102,7 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             if should_refresh_agents(shell) {
                 cmds.push(Cmd::RefreshAgents);
                 cmds.push(Cmd::DrainMessages);
+                cmds.push(Cmd::RefreshUnread);
             }
             cmds
         }
@@ -114,6 +117,12 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
         // ──── last-status.json 刷新结果 ────
         AppMsg::StatusUpdated(statuses) => {
             model.apply_status(statuses);
+            vec![Cmd::WriteDirectory]
+        }
+
+        // ──── inbox 未读数刷新 ────
+        AppMsg::UnreadUpdated(counts) => {
+            model.apply_unread(counts);
             vec![Cmd::WriteDirectory]
         }
 

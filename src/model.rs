@@ -178,6 +178,8 @@ pub struct Model {
     /// pending status 缓存: AgentsLoaded 和 StatusUpdated 是异步的,
     /// 可能 StatusUpdated 先到但 directory 为空。缓存到这,AgentsLoaded 时合并。
     pub pending_status: HashMap<String, (String, String)>,
+    /// handle → 未读消息数(来自 orchestration inbox)
+    pub unread_counts: HashMap<String, usize>,
 }
 
 impl Model {
@@ -188,6 +190,7 @@ impl Model {
             messages: VecDeque::new(),
             generation: 0,
             pending_status: HashMap::new(),
+            unread_counts: HashMap::new(),
         }
     }
 
@@ -252,6 +255,12 @@ impl Model {
             self.messages.pop_front();
         }
         self.messages.push_back(msg);
+    }
+
+    /// 更新未读消息计数(来自 orchestration inbox)。
+    pub fn apply_unread(&mut self, counts: HashMap<String, usize>) {
+        self.unread_counts = counts;
+        self.generation += 1;
     }
 }
 

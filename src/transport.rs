@@ -205,6 +205,33 @@ pub fn orchestration_check() -> Result<Vec<crate::model::OrchMessage>, String> {
     Ok(parsed.result.messages)
 }
 
+/// 跑 `orca-ide orchestration inbox --json`, 解析全量 inbox 获取每个 handle 的未读数。
+/// 用于 TUI 显示 agent card 上的未读 badge。
+pub fn orchestration_inbox_unread() -> Result<std::collections::HashMap<String, usize>, String> {
+    let out = std::process::Command::new("orca-ide")
+        .args(["orchestration", "inbox", "--json"])
+        .output()
+        .map_err(|e| format!("failed to spawn orca-ide inbox: {e}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        return Err(stderr.trim().to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let parsed: CheckOutput = serde_json::from_str(&stdout)
+        .map_err(|e| format!("failed to parse inbox output: {e}"))?;
+
+    let mut unread: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for msg in &parsed.result.messages {
+        if msg.read {
+            continue;
+        }
+        *unread.entry(msg.to_handle.clone()).or_default() += 1;
+    }
+    Ok(unread)
+}
+
 /// ADR-4: 群发(循环 send)。
 ///
 /// 串行对每个 handle 调用 `orchestration_send`, 返回每个结果。
