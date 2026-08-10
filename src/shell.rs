@@ -97,6 +97,12 @@ pub struct Shell {
     pub config_overlay_active: bool,
     /// 活动日志浮层激活(a 键)。
     pub activity_active: bool,
+    /// 输入历史回溯游标(None=未导航, Some(i)=回溯 history[i])。
+    pub history_cursor: Option<usize>,
+    /// 回溯时保存的草稿(Down 越过最新时恢复)。
+    pub saved_input: String,
+    /// 命令历史浮层激活(H 键)。
+    pub history_overlay_active: bool,
     /// 多选的 handle 集合(Space 键 toggle)。
     pub selected_set: std::collections::HashSet<String>,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
@@ -127,6 +133,9 @@ impl Shell {
             group_detail_active: false,
             cheatsheet_active: false,
             activity_active: false,
+            history_cursor: None,
+            saved_input: String::new(),
+            history_overlay_active: false,
             orch_tasks_active: false,
             worktree_ps_active: false,
             config_overlay_active: false,

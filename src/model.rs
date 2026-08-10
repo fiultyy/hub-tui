@@ -253,6 +253,19 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 输入栏历史条目。
+#[derive(Clone, Debug)]
+pub struct HistoryEntry {
+    pub id: i64,
+    pub timestamp_ms: i64,
+    pub text: String,
+    /// 匹配的输入前缀(to:/pty:/create:等), 无匹配则空。
+    pub prefix: String,
+}
+
+/// 历史上限(内存; DB 保留更多)。
+pub const HISTORY_CAP: usize = 500;
+
 /// 编排消息(对齐 orca orchestration inbox --json)。
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct OrchMessage {
@@ -310,6 +323,8 @@ pub struct Model {
     pub messages: VecDeque<OrchMessage>,
     /// 活动日志事件队列(cap EVENTS_CAP, 最新在尾部)。
     pub events: VecDeque<Event>,
+    /// 输入栏历史(cap HISTORY_CAP, 最新在尾部)。
+    pub history: VecDeque<HistoryEntry>,
     /// 异步 generation guard(范式 3: 防陈旧回调)。
     pub generation: u64,
     /// pending status 缓存: AgentsLoaded 和 StatusUpdated 是异步的,
@@ -329,6 +344,7 @@ impl Model {
             directory: HashMap::new(),
             groups: HashMap::new(),
             messages: VecDeque::new(),
+            history: VecDeque::new(),
             events: VecDeque::new(),
             generation: 0,
             pending_status: HashMap::new(),
@@ -453,6 +469,31 @@ impl Model {
     pub fn clear_events(&mut self) {
         self.events.clear();
         self.generation += 1;
+    }
+
+    /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
+    pub fn push_history(&mut self, text: String) {
+        let prefix = text.split_once(':').map(|(p, _)| format!("{p}:")).unwrap_or_default();
+        if self.history.len() >= HISTORY_CAP {
+            self.history.pop_front();
+        }
+        self.history.push_back(HistoryEntry {
+            id: 0,
+            timestamp_ms: now_ms(),
+            text,
+            prefix,
+        });
+        self.generation += 1;
+    }
+
+    /// 启动时从 DB 批量加载历史(替换队列, 截断到 HISTORY_CAP)。
+    pub fn apply_history(&mut self, entries: Vec<HistoryEntry>) {
+        let mut q: VecDeque<HistoryEntry> = entries.into_iter().collect();
+        if q.len() > HISTORY_CAP {
+            let drop_n = q.len() - HISTORY_CAP;
+            q.drain(..drop_n);
+        }
+        self.history = q;
     }
 
     /// 更新未读消息计数(来自 orchestration inbox)。

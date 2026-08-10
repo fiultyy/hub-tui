@@ -70,6 +70,8 @@ pub enum Cmd {
     RefreshOrchTasks,
     /// 持久化活动日志事件到 SQLite(service 同步写)。
     PersistActivityEvent(crate::model::Event),
+    /// 持久化输入历史到 SQLite。
+    PersistHistoryEntry(String),
     /// 无操作。
     Noop,
     /// 退出。
@@ -320,7 +322,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -372,6 +374,15 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             return vec![];
         }
 
+        // H: history overlay (toggle)
+        (KeyCode::Char('H'), KeyModifiers::SHIFT) if !shell.insert_mode => {
+            shell.history_overlay_active = !shell.history_overlay_active;
+            if shell.history_overlay_active {
+                shell.overlay_scroll = 0;
+            }
+            return vec![];
+        }
+
         (KeyCode::Char('q'), KeyModifiers::NONE) if !shell.insert_mode => {
             return vec![Cmd::Quit];
         }
@@ -401,6 +412,8 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             if shell.insert_mode {
                 shell.insert_mode = false;
                 shell.input_buf.clear();
+                shell.history_cursor = None;
+                shell.saved_input.clear();
                 // focus 回当前 tab
                 shell.focus = match shell.tab {
                     Tab::Directory => FocusTarget::Directory,
@@ -637,6 +650,182 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
         _ => vec![],
     }
 }
+/// 解析输入栏提交: 11 个前缀分发。返回 Cmd vec(空=未匹配/验证失败)。
+
+fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd> {
+    // 解析 "to:handle subject body" 格式(编排 inbox)
+    if let Some((to, rest)) = buf.strip_prefix("to:").and_then(|s| s.split_once(' ')) {
+        let subject = rest.to_string();
+        let body = String::new();
+        return vec![Cmd::OrchestrationSend { to: to.to_string(), subject, body }];
+    }
+
+    // 解析 "pty:handle text" 格式(PTY 直接注入)
+    if let Some((handle, text)) = buf.strip_prefix("pty:").and_then(|s| s.split_once(' ')) {
+        if !text.is_ascii() {
+            shell.push_toast("PTY: non-ASCII may fail".into());
+        }
+        return vec![Cmd::TerminalSend { handle: handle.to_string(), text: text.to_string() }];
+    }
+
+    // 解析 "rename:handle new_title" 格式
+    if let Some((handle, title)) = buf.strip_prefix("rename:").and_then(|s| s.split_once(' ')) {
+        if title.is_empty() {
+            return vec![];
+        }
+        return vec![Cmd::RenameTerminal { handle: handle.to_string(), new_title: title.to_string() }];
+    }
+
+    // 解析 "group:<name>" 格式(创建群组并自动加入)
+    if let Some(name) = buf.strip_prefix("group:") {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return vec![];
+        }
+        let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+        if !self_handle.is_empty() {
+            model.groups.entry(name.clone()).or_default().insert(self_handle.clone());
+        }
+        shell.push_toast(format!("Joined group: {name}"));
+        return vec![Cmd::PersistGroupJoin { name: name.clone(), handle: self_handle }, Cmd::WriteDirectory];
+    }
+
+    // 解析 "join:<group>" 格式(加入群组,用 self_handle)
+    if let Some(rest) = buf.strip_prefix("join:") {
+        let group_name = rest.trim().to_string();
+        if group_name.is_empty() {
+            return vec![];
+        }
+        let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+        if self_handle.is_empty() {
+            shell.push_toast("ORCA_TERMINAL_HANDLE not set".into());
+            return vec![];
+        }
+        model.groups.entry(group_name.clone()).or_default().insert(self_handle.clone());
+        shell.push_toast(format!("Joined group: {group_name}"));
+        return vec![Cmd::PersistGroupJoin { name: group_name.clone(), handle: self_handle }, Cmd::WriteDirectory];
+    }
+
+    // 解析 "leave:<group>" 格式(退出群组)
+    if let Some(name) = buf.strip_prefix("leave:") {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return vec![];
+        }
+        let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+        if !self_handle.is_empty() {
+            if let Some(members) = model.groups.get_mut(&name) {
+                members.remove(&self_handle);
+                if members.is_empty() {
+                    model.groups.remove(&name);
+                }
+            }
+        }
+        shell.push_toast(format!("Left group: {name}"));
+        return vec![Cmd::PersistGroupLeave { name: name.clone(), handle: self_handle }, Cmd::WriteDirectory];
+    }
+
+    // 解析 "broadcast:<group> <message>" 格式(群组广播)
+    if let Some(rest) = buf.strip_prefix("broadcast:") {
+        let parts: Vec<&str> = rest.trim_start().splitn(2, ' ').collect();
+        let group_name = match parts.first() {
+            Some(&n) if !n.is_empty() => n.to_string(),
+            _ => return vec![],
+        };
+        let message = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+        if message.is_empty() {
+            return vec![];
+        }
+        // 从 model 提取群组成员 handles
+        let handles: Vec<String> = model.groups
+            .get(&group_name)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        if handles.is_empty() {
+            shell.push_toast(format!("group '{group_name}' has no members"));
+            return vec![];
+        }
+        return vec![Cmd::GroupBroadcast { name: group_name, message, handles }];
+    }
+
+    // 解析 "create:command" 格式(在当前 worktree 创建终端)
+    // 解析 "create:worktree:command" 格式(指定 worktree 创建终端)
+    if let Some(rest) = buf.strip_prefix("create:") {
+        if rest.is_empty() {
+            return vec![];
+        }
+        // 检查是否包含第二个 ':' (worktree:command)
+        if let Some((wt, cmd)) = rest.split_once(':') {
+            if !cmd.is_empty() {
+                return vec![Cmd::CreateTerminal {
+                    worktree: Some(wt.to_string()),
+                    command: cmd.to_string(),
+                    title: None,
+                }];
+            }
+        }
+        // 无第二个 ':' → 纯 command
+        return vec![Cmd::CreateTerminal {
+            worktree: None,
+            command: rest.to_string(),
+            title: None,
+        }];
+    }
+
+    // 解析 "config:key=value" 格式(设置配置项)
+    if let Some(rest) = buf.strip_prefix("config:") {
+        if let Some((key, value)) = rest.split_once('=') {
+            let key = key.trim().to_string();
+            let value = value.trim().to_string();
+            if key.is_empty() {
+                shell.push_toast("config: key cannot be empty".into());
+                return vec![];
+            }
+            // 验证已知 key
+            match key.as_str() {
+                "refresh_interval_ms" => {
+                    if value.parse::<u64>().is_err() {
+                        shell.push_toast("config: refresh_interval_ms must be a number".into());
+                        return vec![];
+                    }
+                }
+                "theme" | "default_filter" | "sort" => {}
+                _ => {
+                    shell.push_toast(format!("config: unknown key '{key}'"));
+                    return vec![];
+                }
+            }
+            return vec![Cmd::SetConfig { key, value }];
+        }
+        // 无 = → 无效
+        shell.push_toast("config: use format config:key=value".into());
+        return vec![];
+    }
+
+    // 解析 "reply:<msg_id> <body>" 格式(回复消息)
+    if let Some((id, body)) = buf.strip_prefix("reply:").and_then(|s| s.split_once(' ')) {
+        if body.is_empty() {
+            return vec![];
+        }
+        return vec![Cmd::OrchestrationReply { id: id.to_string(), body: body.to_string() }];
+    }
+
+    // 解析 "batch:<handles-comma> <message>" 格式(批量发送)
+    if let Some((handles_str, msg)) = buf.strip_prefix("batch:").and_then(|s| s.split_once(' ')) {
+        if msg.is_empty() {
+            return vec![];
+        }
+        let handles: Vec<String> = handles_str.split(',').map(|s| s.trim().to_string()).collect();
+        shell.push_toast(format!("Batch sending to {} agents...", handles.len()));
+        return handles.into_iter().map(|h| Cmd::OrchestrationSend {
+            to: h,
+            subject: msg.to_string(),
+            body: String::new(),
+        }).collect();
+    }
+
+    vec![]
+}
 
 /// 输入模式键盘处理: 字符追加, Enter 发送, Esc 退出。
 fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
@@ -650,178 +839,48 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
                 Tab::Groups => FocusTarget::Groups,
                 Tab::Messages => FocusTarget::Messages,
             };
-
-            // 解析 "to:handle subject body" 格式(编排 inbox)
-            if let Some((to, rest)) = buf.strip_prefix("to:").and_then(|s| s.split_once(' ')) {
-                let subject = rest.to_string();
-                let body = String::new();
-                return vec![Cmd::OrchestrationSend { to: to.to_string(), subject, body }];
+            _shell.history_cursor = None; // reset recall on submit
+            let mut cmds = dispatch_input(model, _shell, buf.clone());
+            if !cmds.is_empty() && !buf.trim().is_empty() {
+                model.push_history(buf.clone());
+                cmds.push(Cmd::PersistHistoryEntry(buf));
             }
+            cmds
+        }
 
-            // 解析 "pty:handle text" 格式(PTY 直接注入)
-            if let Some((handle, text)) = buf.strip_prefix("pty:").and_then(|s| s.split_once(' ')) {
-                if !text.is_ascii() {
-                    _shell.push_toast("PTY: non-ASCII may fail".into());
+        (KeyCode::Up, KeyModifiers::NONE) => {
+            let hist = &model.history;
+            if !hist.is_empty() {
+                match _shell.history_cursor {
+                    None => {
+                        _shell.saved_input = std::mem::take(&mut _shell.input_buf);
+                        let idx = hist.len() - 1;
+                        _shell.history_cursor = Some(idx);
+                        _shell.input_buf = hist[idx].text.clone();
+                    }
+                    Some(i) if i > 0 => {
+                        _shell.history_cursor = Some(i - 1);
+                        _shell.input_buf = hist[i - 1].text.clone();
+                    }
+                    _ => {}
                 }
-                return vec![Cmd::TerminalSend { handle: handle.to_string(), text: text.to_string() }];
             }
-
-            // 解析 "rename:handle new_title" 格式
-            if let Some((handle, title)) = buf.strip_prefix("rename:").and_then(|s| s.split_once(' ')) {
-                if title.is_empty() {
-                    return vec![];
-                }
-                return vec![Cmd::RenameTerminal { handle: handle.to_string(), new_title: title.to_string() }];
-            }
-
-            // 解析 "group:<name>" 格式(创建群组并自动加入)
-            if let Some(name) = buf.strip_prefix("group:") {
-                let name = name.trim().to_string();
-                if name.is_empty() {
-                    return vec![];
-                }
-                let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
-                if !self_handle.is_empty() {
-                    model.groups.entry(name.clone()).or_default().insert(self_handle.clone());
-                }
-                _shell.push_toast(format!("Joined group: {name}"));
-                return vec![Cmd::PersistGroupJoin { name: name.clone(), handle: self_handle }, Cmd::WriteDirectory];
-            }
-
-            // 解析 "join:<group>" 格式(加入群组,用 self_handle)
-            if let Some(rest) = buf.strip_prefix("join:") {
-                let group_name = rest.trim().to_string();
-                if group_name.is_empty() {
-                    return vec![];
-                }
-                let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
-                if self_handle.is_empty() {
-                    _shell.push_toast("ORCA_TERMINAL_HANDLE not set".into());
-                    return vec![];
-                }
-                model.groups.entry(group_name.clone()).or_default().insert(self_handle.clone());
-                _shell.push_toast(format!("Joined group: {group_name}"));
-                return vec![Cmd::PersistGroupJoin { name: group_name.clone(), handle: self_handle }, Cmd::WriteDirectory];
-            }
-
-            // 解析 "leave:<group>" 格式(退出群组)
-            if let Some(name) = buf.strip_prefix("leave:") {
-                let name = name.trim().to_string();
-                if name.is_empty() {
-                    return vec![];
-                }
-                let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
-                if !self_handle.is_empty() {
-                    if let Some(members) = model.groups.get_mut(&name) {
-                        members.remove(&self_handle);
-                        if members.is_empty() {
-                            model.groups.remove(&name);
-                        }
+            vec![]
+        }
+        (KeyCode::Down, KeyModifiers::NONE) => {
+            match _shell.history_cursor {
+                Some(i) => {
+                    let hist = &model.history;
+                    if i + 1 < hist.len() {
+                        _shell.history_cursor = Some(i + 1);
+                        _shell.input_buf = hist[i + 1].text.clone();
+                    } else {
+                        _shell.history_cursor = None;
+                        _shell.input_buf = std::mem::take(&mut _shell.saved_input);
                     }
                 }
-                _shell.push_toast(format!("Left group: {name}"));
-                return vec![Cmd::PersistGroupLeave { name: name.clone(), handle: self_handle }, Cmd::WriteDirectory];
+                None => {}
             }
-
-            // 解析 "broadcast:<group> <message>" 格式(群组广播)
-            if let Some(rest) = buf.strip_prefix("broadcast:") {
-                let parts: Vec<&str> = rest.trim_start().splitn(2, ' ').collect();
-                let group_name = match parts.first() {
-                    Some(&n) if !n.is_empty() => n.to_string(),
-                    _ => return vec![],
-                };
-                let message = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
-                if message.is_empty() {
-                    return vec![];
-                }
-                // 从 model 提取群组成员 handles
-                let handles: Vec<String> = model.groups
-                    .get(&group_name)
-                    .map(|s| s.iter().cloned().collect())
-                    .unwrap_or_default();
-                if handles.is_empty() {
-                    _shell.push_toast(format!("group '{group_name}' has no members"));
-                    return vec![];
-                }
-                return vec![Cmd::GroupBroadcast { name: group_name, message, handles }];
-            }
-
-            // 解析 "create:command" 格式(在当前 worktree 创建终端)
-            // 解析 "create:worktree:command" 格式(指定 worktree 创建终端)
-            if let Some(rest) = buf.strip_prefix("create:") {
-                if rest.is_empty() {
-                    return vec![];
-                }
-                // 检查是否包含第二个 ':' (worktree:command)
-                if let Some((wt, cmd)) = rest.split_once(':') {
-                    if !cmd.is_empty() {
-                        return vec![Cmd::CreateTerminal {
-                            worktree: Some(wt.to_string()),
-                            command: cmd.to_string(),
-                            title: None,
-                        }];
-                    }
-                }
-                // 无第二个 ':' → 纯 command
-                return vec![Cmd::CreateTerminal {
-                    worktree: None,
-                    command: rest.to_string(),
-                    title: None,
-                }];
-            }
-
-            // 解析 "config:key=value" 格式(设置配置项)
-            if let Some(rest) = buf.strip_prefix("config:") {
-                if let Some((key, value)) = rest.split_once('=') {
-                    let key = key.trim().to_string();
-                    let value = value.trim().to_string();
-                    if key.is_empty() {
-                        _shell.push_toast("config: key cannot be empty".into());
-                        return vec![];
-                    }
-                    // 验证已知 key
-                    match key.as_str() {
-                        "refresh_interval_ms" => {
-                            if value.parse::<u64>().is_err() {
-                                _shell.push_toast("config: refresh_interval_ms must be a number".into());
-                                return vec![];
-                            }
-                        }
-                        "theme" | "default_filter" | "sort" => {}
-                        _ => {
-                            _shell.push_toast(format!("config: unknown key '{key}'"));
-                            return vec![];
-                        }
-                    }
-                    return vec![Cmd::SetConfig { key, value }];
-                }
-                // 无 = → 无效
-                _shell.push_toast("config: use format config:key=value".into());
-                return vec![];
-            }
-
-            // 解析 "reply:<msg_id> <body>" 格式(回复消息)
-            if let Some((id, body)) = buf.strip_prefix("reply:").and_then(|s| s.split_once(' ')) {
-                if body.is_empty() {
-                    return vec![];
-                }
-                return vec![Cmd::OrchestrationReply { id: id.to_string(), body: body.to_string() }];
-            }
-
-            // 解析 "batch:<handles-comma> <message>" 格式(批量发送)
-            if let Some((handles_str, msg)) = buf.strip_prefix("batch:").and_then(|s| s.split_once(' ')) {
-                if msg.is_empty() {
-                    return vec![];
-                }
-                let handles: Vec<String> = handles_str.split(',').map(|s| s.trim().to_string()).collect();
-                _shell.push_toast(format!("Batch sending to {} agents...", handles.len()));
-                return handles.into_iter().map(|h| Cmd::OrchestrationSend {
-                    to: h,
-                    subject: msg.to_string(),
-                    body: String::new(),
-                }).collect();
-            }
-
             vec![]
         }
 
@@ -833,6 +892,9 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
 
         // 可打印字符追加
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            if _shell.history_cursor.is_some() {
+                _shell.history_cursor = None;
+            }
             _shell.input_buf.push(c);
             vec![]
         }
@@ -946,12 +1008,27 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.config_overlay_active = false;
             shell.orch_tasks_active = false;
             shell.activity_active = false;
+            shell.history_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
             if shell.activity_active {
                 model.clear_events();
+            } else if shell.history_overlay_active {
+                model.history.clear();
             }
+            vec![]
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) if shell.history_overlay_active => {
+            shell.history_overlay_active = false;
+            let idx = model.history.len().saturating_sub(1).saturating_sub(shell.overlay_scroll);
+            if let Some(entry) = model.history.get(idx) {
+                shell.insert_mode = true;
+                shell.focus = FocusTarget::Input;
+                shell.input_buf = entry.text.clone();
+                shell.history_cursor = None;
+            }
+            shell.overlay_scroll = 0;
             vec![]
         }
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
@@ -1515,5 +1592,42 @@ mod tests {
         };
         let cmds = update(&mut model, &mut shell, AppMsg::StatusUpdated(vec![status]));
         assert!(cmds.iter().any(|c| matches!(&c, Cmd::PersistActivityEvent(e) if e.category == EventCategory::State)));
+    }
+
+    #[test]
+    fn history_recall_up_down() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        model.push_history("to:h1 hello".to_string());
+        model.push_history("to:h2 world".to_string());
+        // Enter input mode, type something
+        shell.insert_mode = true;
+        shell.input_buf = "draft".to_string();
+        // Up: recall newest
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Up)));
+        assert_eq!(shell.input_buf, "to:h2 world");
+        assert_eq!(shell.history_cursor, Some(1));
+        // Up again: older
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Up)));
+        assert_eq!(shell.input_buf, "to:h1 hello");
+        assert_eq!(shell.history_cursor, Some(0));
+        // Down: newer
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Down)));
+        assert_eq!(shell.input_buf, "to:h2 world");
+        // Down past newest: restore draft
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Down)));
+        assert_eq!(shell.input_buf, "draft");
+        assert!(shell.history_cursor.is_none());
+    }
+
+    #[test]
+    fn history_record_on_enter() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        shell.insert_mode = true;
+        shell.input_buf = "to:h1 hello".to_string();
+        let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistHistoryEntry(_))));
+        assert_eq!(model.history.len(), 1);
     }
 }

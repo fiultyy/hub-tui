@@ -105,6 +105,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.activity_active {
         draw_activity_overlay(f, model, shell, area, &theme);
     }
+    // 命令历史浮层(H 键激活)
+    if shell.history_overlay_active {
+        draw_history_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -903,14 +907,21 @@ fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
         } else {
             Span::styled(shell.input_buf.as_str(), Style::default().fg(theme.fg))
         };
+        let recall = shell.history_cursor.is_some();
+        let prompt = if recall { " ↑>" } else { " >" };
+        let prompt_span = Span::styled(
+            prompt.to_string(),
+            Style::default().fg(if recall { theme.warn } else { theme.accent }),
+        );
         let para = Paragraph::new(Line::from(vec![
-            Span::styled(" > ", Style::default().fg(theme.accent)),
+            prompt_span,
             input_display,
         ]));
         f.render_widget(para, area);
 
-        // 光标定位(buf 末尾 + "> " offset)
-        let cursor_x = (shell.input_buf.len() as u16 + 3).min(area.width.saturating_sub(1));
+        // 光标定位(buf 末尾 + prompt offset)
+        let cursor_offset = prompt.len() as u16;
+        let cursor_x = (shell.input_buf.len() as u16 + cursor_offset).min(area.width.saturating_sub(1));
         f.set_cursor_position((area.x + cursor_x, area.y));
     } else {
         // 非 insert_mode: 提示
@@ -969,6 +980,7 @@ fn status_hint(shell: &Shell) -> String {
         || shell.group_detail_active
         || shell.config_overlay_active
         || shell.orch_tasks_active
+        || shell.history_overlay_active
         || shell.activity_active
     {
         return " Esc/q:close j/k:scroll c:clear ".to_string();
@@ -1588,6 +1600,49 @@ fn draw_activity_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect
     f.render_widget(block, overlay_area);
 
     // 滚动裁剪
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    let visible: Vec<Line> = lines[start..end].to_vec();
+    f.render_widget(Paragraph::new(visible), inner);
+}
+/// 命令历史浮层: 最新在前, prefix 着色, 可滚动, Enter 编辑选中项。
+fn draw_history_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+
+    let lines: Vec<Line> = model.history.iter().rev().map(|e| {
+        let ts = format_hms(e.timestamp_ms);
+        let prefix_display = if e.prefix.is_empty() { "(none)".to_string() } else { e.prefix.clone() };
+        Line::from(vec![
+            Span::styled(format!(" {ts} "), Style::default().fg(theme.muted)),
+            Span::styled(format!("{prefix_display:<10} "), Style::default().fg(theme.accent)),
+            Span::styled(e.text.clone(), Style::default().fg(theme.fg)),
+        ])
+    }).collect();
+
+    let lines = if lines.is_empty() {
+        vec![Line::from(Span::styled(" (no history)", Style::default().fg(theme.muted)))]
+    } else {
+        lines
+    };
+
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Command History (j/k:scroll Enter:edit c:clear Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(title, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
     let visible_h = inner.height as usize;
     let total = lines.len();
     let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));

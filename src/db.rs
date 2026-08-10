@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 2;
+const DB_VERSION: i64 = 3;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -165,9 +165,16 @@ impl Db {
                 source   TEXT NOT NULL DEFAULT 'system',
                 text     TEXT NOT NULL DEFAULT ''
             );
-            CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '2');
+            CREATE TABLE IF NOT EXISTS input_history (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                text     TEXT NOT NULL,
+                ts       INTEGER NOT NULL,
+                prefix   TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_input_history_ts ON input_history(ts);
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '3');
             ",
         )
         .ok()?;
@@ -520,6 +527,73 @@ impl Db {
         rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
     }
 
+    // ──── Input history ────
+
+    /// 插入输入历史(连续去重: 与最后一行相同则跳过)。FIFO 截断到 2000 行。
+    pub fn insert_history(&self, text: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        // 连续去重: 与最后一行相同则跳过
+        let last: Option<String> = conn
+            .query_row(
+                "SELECT text FROM input_history ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        if last.as_deref() == Some(text) {
+            return;
+        }
+        let prefix = text.split_once(':').map(|(p, _)| format!("{p}:")).unwrap_or_default();
+        let ts = crate::model::now_ms();
+        let _ = conn.execute(
+            "INSERT INTO input_history (text, ts, prefix) VALUES (?1, ?2, ?3)",
+            params![text, ts, prefix],
+        );
+        // FIFO trim (cap 2000)
+        let _ = conn.execute(
+            "DELETE FROM input_history WHERE id IN (
+                SELECT id FROM input_history ORDER BY id DESC LIMIT -1 OFFSET 2000
+            )",
+            [],
+        );
+    }
+
+    /// 加载最近 N 条输入历史(时间升序, 最旧在前 — 便于 push_back)。
+    pub fn load_recent_history(&self, limit: usize) -> Vec<crate::model::HistoryEntry> {
+        use crate::model::HistoryEntry;
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT id, ts, prefix, text FROM input_history ORDER BY ts ASC LIMIT ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(HistoryEntry {
+                id: r.get(0)?,
+                timestamp_ms: r.get(1)?,
+                prefix: r.get(2)?,
+                text: r.get(3)?,
+            })
+        });
+        rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
+    }
+
+    /// 清空输入历史。
+    pub fn clear_history(&self) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute("DELETE FROM input_history", []);
+    }
+
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -566,7 +640,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("2".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("3".to_string()));
     }
 
     #[test]

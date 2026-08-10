@@ -246,6 +246,11 @@ impl Service {
                         db.insert_event(&ev);
                     }
                 }
+                crate::update::Cmd::PersistHistoryEntry(text) => {
+                    if let Some(db) = &self.db {
+                        db.insert_history(&text);
+                    }
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }

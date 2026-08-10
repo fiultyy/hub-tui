@@ -64,6 +64,8 @@ fn main() -> io::Result<()> {
         mdl.apply_config(bootstrap.config);
         let events = bootstrap_events(&svc);
         mdl.apply_events(events);
+        let history = bootstrap_history(&svc);
+        mdl.apply_history(history);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 
@@ -210,4 +212,9 @@ fn now_secs() -> String {
 /// 启动时从 DB 加载最近活动日志事件(若 DB 不可用则返回空)。
 fn bootstrap_events(svc: &Service) -> Vec<model::Event> {
     svc.db.as_ref().map(|db| db.load_recent_events(2000)).unwrap_or_default()
+}
+
+/// 启动时从 DB 加载输入历史(若 DB 不可用则返回空)。
+fn bootstrap_history(svc: &Service) -> Vec<model::HistoryEntry> {
+    svc.db.as_ref().map(|db| db.load_recent_history(500)).unwrap_or_default()
 }

@@ -240,6 +240,11 @@ pub fn builtin_commands() -> Vec<Command> {
             "Open the Activity Log overlay (recent events across all agents)",
             show_activity,
         ),
+        Command::new(
+            "command history",
+            "Open command history overlay (H) — recall and re-edit past inputs",
+            show_history,
+        ),
     ]
 }
 
@@ -457,6 +462,12 @@ fn show_worktree_ps(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 
 fn show_activity(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.activity_active = true;
+    shell.overlay_scroll = 0;
+    vec![]
+}
+
+fn show_history(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.history_overlay_active = true;
     shell.overlay_scroll = 0;
     vec![]
 }
