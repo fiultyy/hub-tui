@@ -20,6 +20,8 @@ pub struct AgentStatus {
     pub worktree_id: String,
     pub prompt: Option<String>,
     pub tool_name: Option<String>,
+    pub tool_input: Option<String>,
+    pub last_assistant_msg: Option<String>,
 }
 
 /// Unix socket 查询请求(ADR-3)。

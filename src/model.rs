@@ -37,6 +37,13 @@ pub struct Agent {
     pub prompt: Option<String>,
     /// join 后补充(来自 last-status.json)
     pub tool_name: Option<String>,
+    /// join 后补充(来自 last-status.json)
+    pub tool_input: Option<String>,
+    /// join 后补充(来自 last-status.json)
+    pub last_assistant_msg: Option<String>,
+    /// PTY 屏幕快照(来自 terminal list preview,每 5s 刷新)。
+    #[serde(default)]
+    pub preview: Option<String>,
     #[serde(rename = "lastOutputAt", default)]
     pub last_output_at: Option<i64>,
 }
@@ -181,6 +188,8 @@ pub struct StatusJoin {
     pub state: String,
     pub prompt: Option<String>,
     pub tool_name: Option<String>,
+    pub tool_input: Option<String>,
+    pub last_assistant_msg: Option<String>,
 }
 
 /// 纯数据投影。无 IO、无运行态、无渲染缓存。
@@ -221,13 +230,13 @@ impl Model {
 
         // 保留已有 agent 的 join 数据, 计算 pane_key, 合并 pending_status
         for (handle, incoming_agent) in incoming.iter_mut() {
-            // pane_key = tabId:leafId(对齐 last-status.json paneKey)
-            incoming_agent.pane_key = format!("{}:{}", incoming_agent.tab_id, incoming_agent.leaf_id);
             if let Some(old) = self.directory.get(handle) {
                 incoming_agent.source = old.source.clone();
                 incoming_agent.state = old.state.clone();
                 incoming_agent.prompt = old.prompt.clone();
                 incoming_agent.tool_name = old.tool_name.clone();
+                incoming_agent.tool_input = old.tool_input.clone();
+                incoming_agent.last_assistant_msg = old.last_assistant_msg.clone();
             }
             // 合并 pending_status(paneKey join)
             if let Some(sj) = self.pending_status.get(&incoming_agent.pane_key) {
@@ -235,6 +244,8 @@ impl Model {
                 incoming_agent.state = Some(sj.state.clone());
                 incoming_agent.prompt = sj.prompt.clone();
                 incoming_agent.tool_name = sj.tool_name.clone();
+                incoming_agent.tool_input = sj.tool_input.clone();
+                incoming_agent.last_assistant_msg = sj.last_assistant_msg.clone();
             }
         }
 
@@ -263,6 +274,8 @@ impl Model {
                         state: s.state,
                         prompt: s.prompt,
                         tool_name: s.tool_name,
+                        tool_input: s.tool_input,
+                        last_assistant_msg: s.last_assistant_msg,
                     },
                 )
             })
@@ -278,6 +291,8 @@ impl Model {
                 agent.state = Some(sj.state.clone());
                 agent.prompt = sj.prompt.clone();
                 agent.tool_name = sj.tool_name.clone();
+                agent.tool_input = sj.tool_input.clone();
+                agent.last_assistant_msg = sj.last_assistant_msg.clone();
             }
         }
 

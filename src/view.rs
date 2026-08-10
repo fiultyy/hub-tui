@@ -126,7 +126,7 @@ fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
 /// 卡片宽度(字符)。
 pub const CARD_W: u16 = 36;
 /// 卡片内容高度(行)。
-pub const CARD_H: u16 = 5; // tag(1) + prompt(1) + cwd+tool(1) + meta+elapsed(1) + pad(1)
+pub const CARD_H: u16 = 4; // identity(1) + prompt(1) + tool+action(1) + meta(1)
 /// 卡片间距(行/列)。
 pub const CARD_GAP: u16 = 1;
 /// 分区标题高度。
@@ -393,15 +393,45 @@ impl CardStyle {
     }
 }
 
-/// 渲染单个 agent card(5 行模板布局)。
+/// source → 单字符图标映射(辨识度 >> hex tag)。
+fn source_icon(source: Option<&str>) -> &'static str {
+    match source.map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some(s) if s.contains("pi") || s.contains("omp") => "\u{03c0}", // π
+        Some(s) if s.contains("claude") || s.contains("cc") => "c",
+        Some(s) if s.contains("codex") => "o",
+        Some(s) if s.contains("grok") => "x",
+        Some(s) if s.contains("cursor") => "\u{25c8}",                 // ◈
+        _ => ">",
+    }
+}
+
+/// 取 preview 最后一个非空行(过滤装饰线), 给裸终端提供辨识。
+fn preview_tail(preview: Option<&str>) -> String {
+    let raw = preview.unwrap_or("");
+    raw.lines()
+        .rev()
+        .map(|l| l.trim())
+        .find(|l| {
+            !l.is_empty()
+                && !l.starts_with('\u{2500}') // ─
+                && !l.starts_with('\u{2550}') // ═
+                && !l.starts_with('\u{2551}') // ║
+                && !l.starts_with('\u{256d}') // ╭
+                && !l.starts_with('\u{2570}') // ╰
+                && !l.starts_with('\u{2502}') // │
+        })
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 渲染单个 agent card(4 行紧凑布局, 无空白行)。
 ///
 /// 布局:
 /// ```text
-/// tag_id                                  ← row 0: 8位 UUID tag(bg 仅覆盖 tag 宽度)
-/// ▌ prompt text truncated…               ← row 1: prompt(省略号截断)
-/// ▌ 📁 cwd  🔧 toolName                   ← row 2: cwd + 工具名
-/// ▌ ⠋ source · state (branch)    ⏱ 2s   ← row 3: 元信息 + elapsed
-///                                         ← row 4: 底部留白
+/// π title (N)                    ⠋ 2s   ← row 0: source图标+title+badge | 状态+elapsed右对齐
+/// ▌ prompt 或 ↳lastMsg 或 preview        ← row 1: 主辨识行(fallback 链)
+/// ▌ 🔧tool  toolInput截断                ← row 2: 工具+动作
+/// ▌ source · state (branch)              ← row 3: 元信息
 /// ```
 fn draw_agent_card(
     f: &mut Frame,
@@ -420,26 +450,29 @@ fn draw_agent_card(
 
     f.render_widget(ratatui::widgets::Clear, area);
 
-    // ── row 0: tag (底色仅覆盖 tag 宽度) ──
-    let tag = handle_tag(&agent.handle);
-    let tag_text = format!(" {tag} ");
-    let tag_w = UnicodeWidthStr::width(tag_text.as_str());
+    // ── row 0: source图标 + title + badge | 状态图标 + elapsed(右对齐) ──
+    let icon = source_icon(agent.source.as_deref());
+    let cat = StatusCategory::from_agent(agent);
     let title_text = agent.title.as_deref().unwrap_or("").trim();
     let badge_str = if unread > 0 { format!(" ({unread})") } else { String::new() };
+    let elapsed = format_elapsed(agent.last_output_at);
+    let right_part = format!("{} {}", cat.icon(), if elapsed.is_empty() { String::new() } else { elapsed });
+    let right_w = UnicodeWidthStr::width(right_part.as_str()) + 1; // +1 for gap
     let badge_w = UnicodeWidthStr::width(badge_str.as_str());
-    let title_max = avail.saturating_sub(tag_w + badge_w);
+    let icon_w = UnicodeWidthStr::width(icon) + 1; // icon + space
+    let title_max = avail.saturating_sub(icon_w + badge_w + right_w);
     let title_trunc = if !title_text.is_empty() && title_max > 2 {
         crate::render::truncate_width(title_text, title_max)
     } else {
         String::new()
     };
-    let title_w = UnicodeWidthStr::width(title_trunc.as_str());
-    let tag_pad = title_max.saturating_sub(title_w);
-
+    let title_display_w = UnicodeWidthStr::width(title_trunc.as_str());
+    let title_pad = title_max.saturating_sub(title_display_w);
     let mut row0_spans = vec![
-        Span::styled(tag_text, Style::default().bg(cs.tag_bg).fg(theme.bg).add_modifier(Modifier::BOLD)),
-        Span::styled(title_trunc, Style::default().fg(theme.muted)),
-        Span::styled(" ".repeat(tag_pad), Style::default()),
+        Span::styled(icon, Style::default().fg(cs.bar_fg).add_modifier(Modifier::BOLD)),
+        Span::styled(" ", Style::default()),
+        Span::styled(title_trunc, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+        Span::styled(" ".repeat(title_pad), Style::default()),
     ];
     if !badge_str.is_empty() {
         row0_spans.push(Span::styled(
@@ -447,40 +480,66 @@ fn draw_agent_card(
             Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
         ));
     }
+    row0_spans.push(Span::styled(" ", Style::default()));
+    row0_spans.push(Span::styled(
+        right_part,
+        Style::default().fg(theme.state_color(agent.state.as_deref())),
+    ));
     let row0 = Line::from(row0_spans);
 
-    // ── row 1: prompt (截断 + 省略号) ──
-    let prompt_text = agent.prompt.as_deref().unwrap_or("").trim();
-    let prompt_str = if prompt_text.is_empty() {
-        String::new()
+    // ── row 1: prompt > lastAssistantMsg > preview_tail (fallback 链) ──
+    let prompt_raw = agent.prompt.as_deref().unwrap_or("").trim();
+    let msg_raw = agent.last_assistant_msg.as_deref().unwrap_or("").trim();
+    let pv_raw = preview_tail(agent.preview.as_deref());
+    let (row1_text, row1_prefix) = if !prompt_raw.is_empty() {
+        (prompt_raw.to_string(), "")
+    } else if !msg_raw.is_empty() {
+        (msg_raw.to_string(), "\u{21b3}") // ↳
+    } else if !pv_raw.is_empty() {
+        (pv_raw, "\u{2243}")               // ≃ (preview fallback 标记)
     } else {
-        crate::render::truncate_width(prompt_text, avail.saturating_sub(indent))
+        (String::new(), "")
     };
-    let prompt_w = UnicodeWidthStr::width(prompt_str.as_str());
+    let prefix_w = UnicodeWidthStr::width(row1_prefix);
+    let row1_str = crate::render::truncate_width(&row1_text, avail.saturating_sub(indent + prefix_w));
+    let row1_w = UnicodeWidthStr::width(row1_str.as_str());
     let row1 = Line::from(vec![
         Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(prompt_str, Style::default().fg(theme.fg).bg(cs.bg)),
-        Span::styled(" ".repeat(avail.saturating_sub(indent + prompt_w)), bg_style),
+        Span::styled(row1_prefix, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(row1_str, Style::default().fg(theme.fg).bg(cs.bg)),
+        Span::styled(" ".repeat(avail.saturating_sub(indent + prefix_w + row1_w)), bg_style),
     ]);
 
-    // ── row 2: 🔧 toolName(worktreePath 已在分区标题显示) ──
+    // ── row 2: 🔧toolName  toolInput截断 ──
     let tool = agent.tool_name.as_deref().unwrap_or("");
-    let tool_part = if !tool.is_empty() {
+    let tool_label = if !tool.is_empty() {
         format!("\u{1f527}{}", tool)
     } else {
         String::new()
     };
-    let tool_w = UnicodeWidthStr::width(tool_part.as_str());
+    let tool_input = agent.tool_input.as_deref().unwrap_or("").trim();
+    let input_part = if !tool_input.is_empty() {
+        format!(" {}", tool_input)
+    } else {
+        String::new()
+    };
+    let tool_label_w = UnicodeWidthStr::width(tool_label.as_str());
+    let input_max = avail.saturating_sub(indent + tool_label_w);
+    let input_trunc = crate::render::truncate_width(&input_part, input_max);
+    let input_w = UnicodeWidthStr::width(input_trunc.as_str());
     let row2 = Line::from(vec![
         Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(tool_part, Style::default().fg(theme.accent).bg(cs.bg)),
-        Span::styled(" ".repeat(avail.saturating_sub(indent + tool_w)), bg_style),
+        Span::styled(tool_label, Style::default().fg(theme.accent).bg(cs.bg)),
+        Span::styled(input_trunc, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(
+            " ".repeat(avail.saturating_sub(indent + tool_label_w + input_w)),
+            bg_style,
+        ),
     ]);
 
-    // ── row 3: ⠋ source · state (branch)  ⏱ elapsed ──
-    let cat = StatusCategory::from_agent(agent);
+    // ── row 3: source · state (branch) ──
     let source = agent.source.as_deref().unwrap_or("-");
     let state = agent.state.as_deref().unwrap_or("-");
     let branch = if !agent.branch.is_empty() {
@@ -488,32 +547,22 @@ fn draw_agent_card(
     } else {
         String::new()
     };
-    let elapsed = format_elapsed(agent.last_output_at);
-    let elapsed_part = if !elapsed.is_empty() {
-        format!(" \u{23f1}{}", elapsed)
-    } else {
-        String::new()
-    };
-    let elapsed_w = UnicodeWidthStr::width(elapsed_part.as_str());
-    let meta_max = avail.saturating_sub(indent + elapsed_w);
     let meta_str = crate::render::truncate_width(
-        &format!("{} {} \u{00b7} {}{}", cat.icon(), source, state, branch),
-        meta_max,
+        &format!("{} \u{00b7} {}{}", source, state, branch),
+        avail.saturating_sub(indent),
     );
     let meta_w = UnicodeWidthStr::width(meta_str.as_str());
-    let meta_pad = meta_max.saturating_sub(meta_w);
     let row3 = Line::from(vec![
         Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(meta_str, Style::default().fg(theme.state_color(agent.state.as_deref())).bg(cs.bg)),
-        Span::styled(" ".repeat(meta_pad), bg_style),
-        Span::styled(elapsed_part, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(meta_str, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(
+            " ".repeat(avail.saturating_sub(indent + meta_w)),
+            bg_style,
+        ),
     ]);
 
-    // ── row 4: 底部留白 ──
-    let row4 = Line::from(vec![Span::styled(" ".repeat(avail), Style::default())]);
-
-    let content = ratatui::widgets::Paragraph::new(vec![row0, row1, row2, row3, row4]);
+    let content = ratatui::widgets::Paragraph::new(vec![row0, row1, row2, row3]);
     f.render_widget(content, area);
 }
 

@@ -49,6 +49,10 @@ struct LastStatusPayload {
     prompt: Option<String>,
     #[serde(rename = "toolName", default)]
     tool_name: Option<String>,
+    #[serde(rename = "toolInput", default)]
+    tool_input: Option<String>,
+    #[serde(rename = "lastAssistantMessage", default)]
+    last_assistant_msg: Option<String>,
 }
 
 // ───────────────────────── 公开函数 ─────────────────────────
@@ -98,6 +102,8 @@ pub fn read_last_status() -> Result<Vec<crate::msg::AgentStatus>, String> {
             worktree_id: e.worktree_id,
             prompt: e.payload.prompt,
             tool_name: e.payload.tool_name,
+            tool_input: e.payload.tool_input,
+            last_assistant_msg: e.payload.last_assistant_msg,
         })
         .collect())
 }

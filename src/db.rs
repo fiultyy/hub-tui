@@ -55,6 +55,9 @@ impl AgentRow {
             state: self.state,
             prompt: None,
             tool_name: None,
+            tool_input: None,
+            last_assistant_msg: None,
+            preview: None,
             last_output_at: None,
         }
     }
