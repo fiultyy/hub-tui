@@ -138,26 +138,39 @@ impl StatusCategory {
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct OrchMessage {
     pub id: String,
-    #[serde(rename = "fromHandle")]
     pub from_handle: String,
-    #[serde(rename = "toHandle")]
     pub to_handle: String,
     pub subject: String,
     pub body: String,
-    #[serde(rename = "msgType")]
+    #[serde(rename = "type")]
     pub msg_type: String,
     #[serde(default)]
     pub priority: String,
-    #[serde(rename = "threadId")]
     pub thread_id: Option<String>,
     #[serde(default)]
     pub payload: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_read_flag")]
     pub read: bool,
-    #[serde(rename = "createdAt")]
     pub created_at: String,
     #[serde(default)]
     pub sequence: i64,
+}
+
+/// 反序列化 `read` 字段: CLI 输出用 int 0/1, Rust 内部统一为 bool。
+/// 同时容忍 true/false 和缺失(null), 保证不会因该字段解析失败而丢掉整条消息。
+fn de_read_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    struct Vis;
+    impl<'de> serde::de::Visitor<'de> for Vis {
+        type Value = bool;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("bool or int 0/1")
+        }
+        fn visit_bool<E: serde::de::Error>(self, b: bool) -> Result<bool, E> { Ok(b) }
+        fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<bool, E> { Ok(n != 0) }
+        fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<bool, E> { Ok(n != 0) }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<bool, E> { Ok(false) }
+    }
+    d.deserialize_any(Vis)
 }
 
 // ───────────────────────── Model ─────────────────────────
