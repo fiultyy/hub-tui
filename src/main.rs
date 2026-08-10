@@ -186,6 +186,7 @@ fn write_directory(model: &Model) {
             "connected": a.connected,
             "source": a.source,
             "state": a.state,
+            "lastOutputAt": a.last_output_at,
         })).collect::<Vec<_>>(),
         "groups": model.groups,
         "updated": now_secs(),

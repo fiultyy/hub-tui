@@ -52,6 +52,7 @@ impl AgentRow {
             writable: false,
             source: self.source,
             state: self.state,
+            last_output_at: self.last_output_at,
         }
     }
 }

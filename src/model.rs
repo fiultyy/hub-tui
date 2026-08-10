@@ -30,6 +30,37 @@ pub struct Agent {
     pub source: Option<String>,
     /// join 后补充(来自 last-status.json)
     pub state: Option<String>,
+    /// PTY 最后输出时间(epoch ms)。来自 terminal list lastOutputAt。
+    #[serde(rename = "lastOutputAt", default)]
+    pub last_output_at: Option<i64>,
+}
+
+/// 活跃判定阈值: lastOutputAt 在此时间内 = working(推理中)。
+const ACTIVE_THRESHOLD_MS: i64 = 10_000;
+
+impl Agent {
+    /// 返回 NOW 的时间戳(epoch ms)。
+    fn now_ms() -> i64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    /// 推断显示状态。规则:
+    /// 1. lastOutputAt < 10s → "working"(PTY 有输出 = agent 在推理/执行)
+    /// 2. 否则用 hook state(working/waiting/blocked/done)
+    /// 3. 都没有 → "idle"
+    /// 解决 agent 长时间 LLM 推理不触发 hook 导致 state 冻结在 done 的问题。
+    pub fn effective_state(&self) -> &str {
+        if let Some(last) = self.last_output_at {
+            if Self::now_ms() - last < ACTIVE_THRESHOLD_MS {
+                return "working";
+            }
+        }
+        self.state.as_deref().unwrap_or("idle")
+    }
 }
 /// Directory 分区用: agent 状态分类。
 /// 排序值(derive Ord) = 分区显示顺序。
@@ -99,7 +130,7 @@ impl StatusCategory {
 
     /// 从 agent 直接取分类。
     pub fn from_agent(agent: &Agent) -> Self {
-        Self::from_state(agent.state.as_deref())
+        Self::from_state(Some(agent.effective_state()))
     }
 }
 

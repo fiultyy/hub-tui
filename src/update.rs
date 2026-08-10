@@ -541,6 +541,7 @@ mod tests {
             writable: true,
             source: None,
             state: None,
+            last_output_at: None,
         }];
 
         let cmds = update(
