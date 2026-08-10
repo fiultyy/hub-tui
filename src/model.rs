@@ -354,7 +354,10 @@ pub struct Model {
     pub aliases: HashMap<String, String>,
     /// 自定义热键: key_char → dispatch_input_text(持久化到 DB)。
     pub hotkeys: HashMap<String, String>,
+    /// Watch(监控) agent handle 集合(持久化到 DB)。
+    pub watched: HashSet<String>,
 }
+
 
 
 impl Model {
@@ -380,6 +383,7 @@ impl Model {
             pinned: HashSet::new(),
             aliases: HashMap::new(),
             hotkeys: HashMap::new(),
+            watched: HashSet::new(),
         }
     }
 
@@ -516,6 +520,24 @@ impl Model {
     /// 启动时从 DB 加载置顶集合(替换)。
     pub fn apply_pinned(&mut self, handles: Vec<String>) {
         self.pinned = handles.into_iter().collect();
+    }
+    // ──── Watch(监控)────
+
+    /// agent 是否被监控。
+    pub fn is_watched(&self, handle: &str) -> bool {
+        self.watched.contains(handle)
+    }
+
+    /// 切换监控状态(insert/remove)。
+    pub fn toggle_watch(&mut self, handle: &str) {
+        if !self.watched.remove(handle) {
+            self.watched.insert(handle.to_string());
+        }
+    }
+
+    /// 启动时从 DB 加载监控集合(替换)。
+    pub fn apply_watched(&mut self, handles: Vec<String>) {
+        self.watched = handles.into_iter().collect();
     }
 
 
@@ -1763,4 +1785,5 @@ pub struct ExportBundle {
     pub notes: HashMap<String, String>,
     pub aliases: HashMap<String, String>,
     pub hotkeys: HashMap<String, String>,
+    pub watched: Vec<String>,
 }

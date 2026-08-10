@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 12;
+const DB_VERSION: i64 = 13;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -227,7 +227,11 @@ impl Db {
                 created_at INTEGER NOT NULL
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '12');
+            CREATE TABLE IF NOT EXISTS watched_agents (
+                handle TEXT PRIMARY KEY
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '13');
             ",
         )
         .ok()?;
@@ -688,6 +692,31 @@ impl Db {
             .map(|r| r.filter_map(|x| x.ok()).collect())
             .unwrap_or_default()
     }
+    // ──── Watched agents ────
+
+    /// 添加监控 agent。
+    pub fn upsert_watched(&self, handle: &str) {
+        let conn = match self.conn.lock() { Ok(c) => c, Err(_) => return };
+        let _ = conn.execute("INSERT OR IGNORE INTO watched_agents (handle) VALUES (?1)", params![handle]);
+    }
+
+    /// 移除监控 agent。
+    pub fn remove_watched(&self, handle: &str) {
+        let conn = match self.conn.lock() { Ok(c) => c, Err(_) => return };
+        let _ = conn.execute("DELETE FROM watched_agents WHERE handle = ?1", params![handle]);
+    }
+
+    /// 加载所有监控 agent handles。
+    pub fn load_watched(&self) -> Vec<String> {
+        let conn = match self.conn.lock() { Ok(c) => c, Err(_) => return vec![] };
+        let mut stmt = match conn.prepare("SELECT handle FROM watched_agents") {
+            Ok(s) => s, Err(_) => return vec![],
+        };
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .ok()
+            .map(|r| r.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default()
+    }
 
     // ──── Agent tags ────
 
@@ -1058,6 +1087,7 @@ impl Db {
             DELETE FROM agent_notes;
             DELETE FROM aliases;
             DELETE FROM hotkeys;
+            DELETE FROM watched_agents;
             DELETE FROM config WHERE key != 'db_version';
         ");
     }
@@ -1107,7 +1137,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("12".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("13".to_string()));
     }
 
     #[test]

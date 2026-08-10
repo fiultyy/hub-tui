@@ -112,6 +112,10 @@ pub enum Cmd {
     PersistHotkey { key: String, command: String },
     /// 移除热键。
     RemoveHotkey { key: String },
+    /// 持久化监控 agent。
+    PersistWatchAdd { handle: String },
+    /// 移除监控 agent。
+    PersistWatchRemove { handle: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -254,6 +258,13 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
                     if let Some(agent) = model.directory.get(&handle) {
                         let new_cat = StatusCategory::from_agent(agent);
                         shell.push_toast(format!("📌 {} → {}", handle, new_cat.label()));
+                    }
+                }
+                // ── Watch alert: toast for watched agents on state change ──
+                if model.watched.contains(&handle) {
+                    if let Some(agent) = model.directory.get(&handle) {
+                        let new_cat = StatusCategory::from_agent(agent);
+                        shell.push_toast(format!("👁 {} → {}", handle, new_cat.label()));
                     }
                 }
                 // ── Alert rules check ──
@@ -410,10 +421,11 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             model.apply_notes(bundle.notes.clone());
             model.apply_aliases(bundle.aliases.clone());
             model.apply_hotkeys(bundle.hotkeys.clone());
+            model.apply_watched(bundle.watched.clone());
             model.generation += 1;
             let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
                 + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
-                + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len();
+                + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len() + bundle.watched.len();
             shell.push_toast(format!("✓ imported {count} items from {path}"));
             vec![]
         }
@@ -459,6 +471,21 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
+    // Ctrl-W: toggle watch on current agent (non-insert mode)
+    if !shell.insert_mode {
+        if let (KeyCode::Char('w'), KeyModifiers::CONTROL) = (k.code, k.modifiers) {
+            if let Some(handle) = selected_agent_handle(model, shell) {
+                model.toggle_watch(&handle);
+                let watching = model.is_watched(&handle);
+                shell.push_toast(if watching { format!("👁 watching: {handle}") } else { format!("unwatched: {handle}") });
+                return if watching { vec![Cmd::PersistWatchAdd { handle }] } else { vec![Cmd::PersistWatchRemove { handle }] };
+            } else {
+                shell.push_toast("no agent selected".into());
+                return vec![];
+            }
+        }
+    }
+
 
 
 
@@ -1465,10 +1492,11 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             notes: model.notes.clone(),
             aliases: model.aliases.clone(),
             hotkeys: model.hotkeys.clone(),
+            watched: model.watched.iter().cloned().collect(),
         };
         let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
             + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
-            + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len();
+            + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len() + bundle.watched.len();
         shell.push_toast(format!("exporting {count} items to {path}…"));
         return vec![Cmd::ExportSettings { path, bundle }];
     }
@@ -1555,6 +1583,19 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![];
     }
 
+
+    // watch:<handle> — toggle watch on agent
+    if let Some(rest) = buf.strip_prefix("watch:") {
+        let handle = rest.trim().to_string();
+        if !handle.is_empty() {
+            model.toggle_watch(&handle);
+            let watching = model.is_watched(&handle);
+            shell.push_toast(if watching { format!("👁 watching: {handle}") } else { format!("unwatched: {handle}") });
+            return if watching { vec![Cmd::PersistWatchAdd { handle }] } else { vec![Cmd::PersistWatchRemove { handle }] };
+        }
+        shell.push_toast("watch: usage: watch:<handle>".into());
+        return vec![];
+    }
 
     vec![]
 }
@@ -1920,11 +1961,11 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                 vec![]
             }
             (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-                shell.quick_actions_cursor = (shell.quick_actions_cursor + 1) % 9;
+                shell.quick_actions_cursor = (shell.quick_actions_cursor + 1) % 10;
                 vec![]
             }
             (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-                shell.quick_actions_cursor = if shell.quick_actions_cursor == 0 { 8 } else { shell.quick_actions_cursor - 1 };
+                shell.quick_actions_cursor = if shell.quick_actions_cursor == 0 { 9 } else { shell.quick_actions_cursor - 1 };
                 vec![]
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
@@ -1973,6 +2014,12 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                     6 => vec![Cmd::SwitchTerminal { handle }],
                     7 => vec![Cmd::ReadTerminal { handle }],
                     8 => vec![Cmd::CloseTerminal { handle }],
+                    9 => {
+                        model.toggle_watch(&handle);
+                        let watching = model.is_watched(&handle);
+                        shell.push_toast(if watching { format!("👁 watching: {handle}") } else { format!("unwatched: {handle}") });
+                        if watching { vec![Cmd::PersistWatchAdd { handle }] } else { vec![Cmd::PersistWatchRemove { handle }] }
+                    }
                     _ => vec![],
                 }
             }

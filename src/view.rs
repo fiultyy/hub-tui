@@ -406,7 +406,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                         v.sort();
                         v
                     }).unwrap_or_default();
-                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread, model.notes.contains_key(&agent.handle));
+                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread, model.notes.contains_key(&agent.handle), model.watched.contains(&agent.handle));
                 }
             }
         }
@@ -557,6 +557,7 @@ fn draw_agent_card(
     tags: &[String],
     unread: usize,
     has_note: bool,
+    watched: bool,
 ) {
     use unicode_width::UnicodeWidthStr;
 
@@ -581,11 +582,13 @@ fn draw_agent_card(
     };
     let note_badge = if has_note { " 📝" } else { "" };
     let note_badge_w = UnicodeWidthStr::width(note_badge);
+    let watch_badge = if watched { " 👁" } else { "" };
+    let watch_badge_w = UnicodeWidthStr::width(watch_badge);
     let tag_badge_w = UnicodeWidthStr::width(tag_badge.as_str());
     let right_w = UnicodeWidthStr::width(right_part.as_str()) + 1; // +1 for gap
     let badge_w = UnicodeWidthStr::width(badge_str.as_str());
     let icon_w = UnicodeWidthStr::width(icon) + 1; // icon + space
-    let title_max = avail.saturating_sub(icon_w + badge_w + tag_badge_w + note_badge_w + right_w);
+    let title_max = avail.saturating_sub(icon_w + badge_w + tag_badge_w + note_badge_w + watch_badge_w + right_w);
     let title_trunc = if !title_text.is_empty() && title_max > 2 {
         crate::render::truncate_width(title_text, title_max)
     } else {
@@ -614,6 +617,12 @@ fn draw_agent_card(
     if !note_badge.is_empty() {
         row0_spans.push(Span::styled(
             note_badge,
+            Style::default().fg(theme.muted),
+        ));
+    }
+    if !watch_badge.is_empty() {
+        row0_spans.push(Span::styled(
+            watch_badge,
             Style::default().fg(theme.muted),
         ));
     }
