@@ -288,11 +288,49 @@ impl Service {
                         }
                     });
                 }
+                crate::update::Cmd::CreateTerminal { worktree, command, title } => {
+                    let tx = self.tx.clone();
+                    let lock = Arc::clone(&self.cli_lock);
+                    thread::spawn(move || {
+                        let _guard = lock.lock();
+                        match transport::terminal_create(
+                            worktree.as_deref(),
+                            &command,
+                            title.as_deref(),
+                        ) {
+                            Ok(result) => {
+                                let _ = tx.send(AppMsg::TerminalCreated {
+                                    handle: result.handle,
+                                    title: result.title,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppMsg::Error(e));
+                            }
+                        }
+                    });
+                }
+                crate::update::Cmd::GroupBroadcast { name, message, handles } => {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        let results = transport::group_broadcast(
+                            &handles,
+                            &format!("[{name}]"),
+                            &message,
+                        );
+                        let ok = results.iter().filter(|r| r.is_ok()).count();
+                        let fail = results.len() - ok;
+                        let _ = tx.send(AppMsg::GroupActionOk(
+                            format!("Broadcast to {name}: {ok} ok, {fail} failed"),
+                        ));
+                    });
+                }
                 _ => {}
             }
         }
     }
 }
+
 
 /// Simple ISO 8601-ish UTC timestamp (no chrono dependency).
 fn now_iso() -> String {

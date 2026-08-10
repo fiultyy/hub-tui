@@ -339,6 +339,61 @@ pub fn terminal_read_output(handle: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// terminal create 结果: `orca-ide terminal create --json` 返回 handle 等字段。
+#[derive(serde::Deserialize)]
+pub struct CreateTerminalResult {
+    /// 新终端 handle(用于后续 send/switch/close 等操作)。
+    pub handle: String,
+    /// 终端 title(可能为空)。
+    #[serde(default)]
+    pub title: Option<String>,
+    /// worktreeId。
+    #[serde(default)]
+    pub worktree_id: Option<String>,
+}
+
+/// 对齐 `orca-ide terminal create --json` 顶层壳。
+#[derive(serde::Deserialize)]
+struct CreateTerminalOutput {
+    result: CreateTerminalData,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateTerminalData {
+    terminal: CreateTerminalResult,
+}
+
+/// 创建终端: `orca-ide terminal create --worktree <sel> --command <cmd> --title <name> --json`。
+/// 返回 handle(用于后续操作)。
+pub fn terminal_create(
+    worktree: Option<&str>,
+    command: &str,
+    title: Option<&str>,
+) -> Result<CreateTerminalResult, String> {
+    let mut args = vec!["terminal", "create", "--json"];
+    if let Some(wt) = worktree {
+        args.extend_from_slice(&["--worktree", wt]);
+    }
+    args.extend_from_slice(&["--command", command]);
+    if let Some(t) = title {
+        args.extend_from_slice(&["--title", t]);
+    }
+    let output = Command::new("orca-ide")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("terminal create failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "terminal create exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let parsed: CreateTerminalOutput = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("parse terminal create JSON: {e}"))?;
+    Ok(parsed.result.terminal)
+}
+
 /// worktree ps: `orca-ide worktree ps --json`。
 pub fn fetch_worktree_ps() -> Result<Vec<crate::model::WorktreePsEntry>, String> {
     let output = Command::new("orca-ide")

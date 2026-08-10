@@ -11,7 +11,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::model::{directory_sorted_handles, Model, StatusCategory};
@@ -85,6 +85,11 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.worktree_ps_active {
         draw_worktree_ps_overlay(f, model, shell, area, &theme);
     }
+
+    // cheatsheet 浮层(? 键激活)
+    if shell.cheatsheet_active {
+        draw_cheatsheet(f, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -132,12 +137,16 @@ fn draw_tabbar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     f.render_widget(para, area);
 }
 
-/// 主区: 按当前 tab 路由。
+/// 主区: 按当前 tab 路由。group_detail_active 时叠加浮层。
 fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     match shell.tab {
         Tab::Directory => draw_directory(f, model, shell, area, theme),
         Tab::Groups => draw_groups(f, model, shell, area, theme),
         Tab::Messages => draw_messages(f, model, shell, area, theme),
+    }
+    // 群组详情浮层(叠加在 Groups tab 之上)
+    if shell.group_detail_active {
+        draw_group_detail(f, model, shell, area, theme);
     }
 }
 
@@ -593,6 +602,7 @@ fn draw_agent_card(
 }
 
 /// Groups tab: 群组列表 + 成员。
+/// Enter 选中后弹出成员详情浮层; 也可通过命令面板 create/join/leave/broadcast。
 fn draw_groups(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     let focused = matches!(shell.focus, crate::shell::FocusTarget::Groups);
     let block = blocks::bordered_block("Groups", focused, theme);
@@ -600,10 +610,13 @@ fn draw_groups(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &
     f.render_widget(block, area);
 
     if model.groups.is_empty() {
-        let empty = Paragraph::new(Span::styled(
-            "(no groups)",
-            Style::default().fg(theme.muted),
-        ));
+        let empty = Paragraph::new(vec![
+            Line::from(Span::styled("(no groups)", Style::default().fg(theme.muted))),
+            Line::from(Span::styled(
+                "  i: input  group:<name> to create",
+                Style::default().fg(theme.muted),
+            )),
+        ]);
         f.render_widget(empty, inner);
         return;
     }
@@ -645,6 +658,9 @@ fn draw_groups(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &
         })
         .collect();
 
+    let list_height = inner.height.saturating_sub(1); // 底部留一行给 hint
+    let list_area = Rect::new(inner.x, inner.y, inner.width, list_height);
+
     let list = List::new(items).highlight_style(
         Style::default()
             .bg(theme.selection_bg)
@@ -656,7 +672,100 @@ fn draw_groups(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &
         state.select(Some(shell.cursor.min(names.len() - 1)));
     }
 
-    f.render_stateful_widget(list, inner, &mut state);
+    f.render_stateful_widget(list, list_area, &mut state);
+
+    // 底部提示行
+    let hint_y = inner.y + list_height;
+    if hint_y < inner.y + inner.height {
+        let hint = Paragraph::new(Span::styled(
+            " Enter:details  i:input  Ctrl-P:commands",
+            Style::default().fg(theme.muted),
+        ));
+        f.render_widget(hint, Rect::new(inner.x, hint_y, inner.width, 1));
+    }
+}
+
+/// Groups 成员详情浮层: 显示选中群组的全部成员列表。
+fn draw_group_detail(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    let mut names: Vec<&String> = model.groups.keys().collect();
+    names.sort();
+
+    let group_name = match names.get(shell.cursor) {
+        Some(n) => *n,
+        None => return,
+    };
+    let members = match model.groups.get(group_name) {
+        Some(m) => m,
+        None => return,
+    };
+
+    // 浮层居中
+    let overlay_w = (area.width.min(60)).max(30);
+    let overlay_h = (members.len() as u16 + 4).min(area.height.saturating_sub(4)).max(5);
+    let x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
+    let overlay_area = Rect::new(x, y, overlay_w, overlay_h);
+
+    // 半透明背景
+    let bg = Block::default()
+        .style(Style::default().bg(theme.bg));
+    f.render_widget(bg, area);
+
+    let block = Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(format!(" Group: {} ", group_name));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    // 成员列表
+    let mut member_lines: Vec<Line> = Vec::new();
+    member_lines.push(Line::from(Span::styled(
+        format!(" {} members (j/k scroll, q close)", members.len()),
+        Style::default().fg(theme.muted),
+    )));
+    member_lines.push(Line::from("")); // 分隔线
+
+    let mut handles: Vec<&String> = members.iter().collect();
+    handles.sort();
+
+    for (i, handle) in handles.iter().enumerate() {
+        let truncated = crate::render::truncate_width(handle, overlay_w.saturating_sub(4) as usize);
+        // 查找 agent 对应的 title
+        let title = model.directory.get(*handle)
+            .and_then(|a| a.title.as_deref())
+            .unwrap_or("?");
+        let title_trunc = crate::render::truncate_width(title, 20);
+        let is_self = std::env::var("ORCA_TERMINAL_HANDLE")
+            .map(|h| h == **handle)
+            .unwrap_or(false);
+
+        let style = if is_self {
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+
+        member_lines.push(Line::from(vec![
+            Span::styled(format!(" {:>2}. ", i + 1), style),
+            Span::styled(format!("{truncated} "), style),
+            Span::styled(format!("({title_trunc})"), Style::default().fg(theme.muted)),
+        ]));
+    }
+
+    // 渲染带滚动
+    let needs_scroll = member_lines.len() as u16 > inner.height;
+    let scroll_offset = if needs_scroll {
+        shell.overlay_scroll.min(member_lines.len() - inner.height as usize)
+    } else {
+        0
+    };
+    let content = Paragraph::new(member_lines);
+    if needs_scroll {
+        f.render_widget(content.scroll((scroll_offset as u16, 0)), inner);
+    } else {
+        f.render_widget(content, inner);
+    }
 }
 
 /// Messages tab: inbox 消息流(按 thread_id 分组, 最近在上)。
@@ -753,8 +862,7 @@ fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
         f.render_widget(para, area);
     }
 }
-
-/// 状态栏: spinner + 连接状态 + 快捷键。
+/// 状态栏: spinner + 连接状态 + 动态快捷键提示。
 fn draw_status_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     let mut spans: Vec<Span> = Vec::new();
 
@@ -779,8 +887,8 @@ fn draw_status_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     };
     spans.push(Span::styled(conn_label, Style::default().fg(conn_color)));
 
-    // 右侧: q:quit  Tab:switch  Ctrl-d/u:scroll
-    let right_hint = " q:quit  Tab:switch  Ctrl-d/u:scroll ";
+    // 右侧: 根据当前 tab + 模式显示不同快捷键提示
+    let right_hint = status_hint(shell);
     // 用 pad 到右边
     let total_text_width: usize = spans.iter().map(|s| s.width()).sum();
     let space_left = (area.width as usize).saturating_sub(total_text_width + right_hint.len());
@@ -789,6 +897,32 @@ fn draw_status_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
 
     let para = Paragraph::new(Line::from(spans));
     f.render_widget(para, area);
+}
+
+/// 根据当前 tab + 模式返回右侧快捷键提示。
+fn status_hint(shell: &Shell) -> String {
+    use crate::shell::Tab;
+    if shell.cheatsheet_active
+        || shell.overlay_content.is_some()
+        || shell.worktree_ps_active
+        || shell.group_detail_active
+    {
+        return " Esc/q:close j/k:scroll ".to_string();
+    }
+    if shell.palette_active {
+        return " Esc:close Enter:exec j/k:nav ".to_string();
+    }
+    if shell.filter_active {
+        return " Esc:close Enter:confirm j/k:nav ?:help ".to_string();
+    }
+    if shell.insert_mode {
+        return " Esc:cancel Enter:send ".to_string();
+    }
+    match shell.tab {
+        Tab::Directory => " j/k:nav i:input s:switch p:pty w:worktree /:filter ?:help ".to_string(),
+        Tab::Groups => " j/k:nav Enter:detail g:next Tab:switch ?:help ".to_string(),
+        Tab::Messages => " j/k:nav g:next Tab:switch ?:help ".to_string(),
+    }
 }
 
 /// spinner 字符集(简化版: 4 帧)。
@@ -989,6 +1123,126 @@ fn draw_worktree_ps_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: R
     }).collect();
 
     let visible_h = inner.height as usize;
+    let start = shell.overlay_scroll.min(lines.len().saturating_sub(visible_h));
+    let visible: Vec<Line> = lines[start..start.min(lines.len()).min(start + visible_h)].to_vec();
+    f.render_widget(ratatui::widgets::Paragraph::new(visible), inner);
+}
+
+// ───────────────────────── cheatsheet 浮层 ─────────────────────────
+
+/// cheatsheet: 快捷键 + 命令面板命令 + 输入前缀的统一帮助浮层(? 键)。
+/// 命令列表从 builtin_commands() 动态读取,不硬编码。
+fn draw_cheatsheet(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
+    let commands = crate::command::builtin_commands();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(""));
+
+    // ── Section 1: Keybindings ──
+    lines.push(Line::from(vec![
+        Span::styled(" KEYBINDINGS", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+    ]));
+
+    let keybindings: &[(&str, &str)] = &[
+        ("j/k ↓↑       ", "Navigate list"),
+        ("i             ", "Enter input mode"),
+        ("g             ", "Cycle tabs (Dir→Groups→Msg)"),
+        ("s             ", "Switch to selected agent"),
+        ("p             ", "PTY inject to selected agent"),
+        ("Enter         ", "Select agent / send message"),
+        ("Tab           ", "Switch tab"),
+        ("/             ", "Filter agents (Directory)"),
+        ("w             ", "Worktree overview"),
+        ("Ctrl-P / :    ", "Command palette"),
+        ("Ctrl-d / u    ", "Scroll half page"),
+        ("q / Ctrl-C    ", "Quit"),
+        ("Esc           ", "Exit insert mode / cancel"),
+        ("?             ", "Toggle this help"),
+    ];
+    for (key, desc) in keybindings {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {}", key), Style::default().fg(theme.accent)),
+            Span::styled(*desc, Style::default().fg(theme.fg)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // ── Section 2: Commands (from builtin_commands()) ──
+    lines.push(Line::from(vec![
+        Span::styled(" COMMANDS (Ctrl-P)", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+    ]));
+
+    for cmd in &commands {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:20}", cmd.name),
+                Style::default().fg(theme.fg),
+            ),
+            Span::styled(cmd.description, Style::default().fg(theme.muted)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // ── Section 3: Input Prefixes ──
+    lines.push(Line::from(vec![
+        Span::styled(" INPUT PREFIXES", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+    ]));
+
+    let prefixes: &[(&str, &str)] = &[
+        ("to:handle msg     ", "Send orchestration message"),
+        ("pty:handle txt    ", "Inject text to agent PTY"),
+        ("rename:h name     ", "Rename agent terminal"),
+        ("group:name        ", "Create group and join"),
+        ("join:name         ", "Join existing group"),
+        ("leave:name        ", "Leave group"),
+        ("broadcast:g msg   ", "Broadcast to group"),
+        ("create:cmd        ", "Create terminal in worktree"),
+    ];
+    for (key, desc) in prefixes {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {}", key), Style::default().fg(theme.accent)),
+            Span::styled(*desc, Style::default().fg(theme.fg)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // ── Layout: centered overlay, scrollable ──
+    let content_w: usize = lines.iter().map(|l| l.width()).max().unwrap_or(40);
+    let max_w = area.width.saturating_sub(4) as usize;
+    let display_w = content_w.min(max_w).max(40);
+    let overlay_w = (display_w + 4) as u16; // +4: border(2) + padding(2)
+    let max_h = area.height.saturating_sub(4);
+    let content_h = lines.len() as u16;
+    let overlay_h = content_h.min(max_h).max(10);
+    let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let overlay_y = area.y + 2;
+
+    let bg_rect = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+    f.render_widget(ratatui::widgets::Clear, bg_rect);
+
+    let border = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " Quick Reference (Esc/q: close) ",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = border.inner(bg_rect);
+    f.render_widget(border, bg_rect);
+
+    let visible_h = inner.height as usize;
+    if visible_h == 0 {
+        return;
+    }
     let start = shell.overlay_scroll.min(lines.len().saturating_sub(visible_h));
     let visible: Vec<Line> = lines[start..start.min(lines.len()).min(start + visible_h)].to_vec();
     f.render_widget(ratatui::widgets::Paragraph::new(visible), inner);

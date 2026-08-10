@@ -85,7 +85,10 @@ pub struct Shell {
     pub overlay_content: Option<String>,
     /// 浮层滚动位置。
     pub overlay_scroll: usize,
-    /// worktree ps 浮层激活。
+    /// Groups tab: 选中群组后显示成员详情浮层。
+    pub group_detail_active: bool,
+    /// cheatsheet 浮层激活(? 键)。
+    pub cheatsheet_active: bool,
     pub worktree_ps_active: bool,
     /// generation guard(范式 3: 防陈旧回调)。
     generation: u64,
@@ -110,6 +113,8 @@ impl Shell {
             filter_query: None,
             overlay_content: None,
             overlay_scroll: 0,
+            group_detail_active: false,
+            cheatsheet_active: false,
             worktree_ps_active: false,
             generation: 0,
         }

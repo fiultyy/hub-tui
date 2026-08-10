@@ -31,6 +31,8 @@ pub struct SocketReq {
     pub name: Option<String>,
     pub handle: Option<String>,
     pub cwd: Option<String>,
+    /// broadcast 消息体。
+    pub message: Option<String>,
 }
 
 // ───────────────────────── AppMsg(唯一 fan-in 出口)─────────────────────────
@@ -69,8 +71,12 @@ pub enum AppMsg {
     InjectFailed(String),
     /// terminal read 结果回灌。
     TerminalOutput(String),
+    /// 群组操作成功反馈(joined/left/broadcast)。
+    GroupActionOk(String),
     /// worktree ps 结果回灌。
     WorktreePsLoaded(Vec<crate::model::WorktreePsEntry>),
+    /// terminal create 成功: 返回新终端 handle + title(用于 toast + RefreshAgents)。
+    TerminalCreated { handle: String, title: Option<String> },
     /// 通用错误。
     Error(String),
 }

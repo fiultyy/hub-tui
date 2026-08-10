@@ -116,6 +116,46 @@ pub fn builtin_commands() -> Vec<Command> {
             show_worktree_ps,
         ),
         Command::new(
+            "new terminal",
+            "Create a blank terminal in the current worktree (enter input mode)",
+            new_terminal,
+        ),
+        Command::new(
+            "spawn claude",
+            "Launch Claude Code agent in a new terminal",
+            spawn_claude,
+        ),
+        Command::new(
+            "spawn codex",
+            "Launch OpenAI Codex agent in a new terminal",
+            spawn_codex,
+        ),
+        Command::new(
+            "spawn pi",
+            "Launch Pi agent in a new terminal",
+            spawn_pi,
+        ),
+        Command::new(
+            "create group",
+            "Create a new group and join it (enter input mode: group:<name>)",
+            create_group,
+        ),
+        Command::new(
+            "join group",
+            "Join an existing group (enter input mode: join:<group>)",
+            join_group,
+        ),
+        Command::new(
+            "leave group",
+            "Leave the selected group (enter input mode: leave:<group>)",
+            leave_group,
+        ),
+        Command::new(
+            "broadcast",
+            "Send message to all members of the selected group",
+            broadcast_to_group,
+        ),
+        Command::new(
             "quit",
             "Exit hub-tui",
             quit,
@@ -237,6 +277,79 @@ fn read_output(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 fn show_worktree_ps(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.worktree_ps_active = true;
     vec![Cmd::RefreshWorktreePs]
+}
+
+fn new_terminal(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    // 进入输入模式,预填 "create:" 前缀,用户补 command
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "create:".to_string();
+    vec![]
+}
+
+fn spawn_agent(model: &Model, shell: &mut Shell, agent_cmd: &str, label: &str) -> Vec<Cmd> {
+    // 尝试获取选中 agent 的 worktree; 没有则默认 active
+    let worktree = selected_handle(model, shell)
+        .and_then(|h| model.directory.get(&h).map(|a| a.worktree_id.clone()));
+    // 用 agent 命令名作为 title
+    shell.push_toast(format!("spawning {label}..."));
+    vec![Cmd::CreateTerminal {
+        worktree,
+        command: agent_cmd.to_string(),
+        title: Some(label.to_string()),
+    }]
+}
+
+fn spawn_claude(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    spawn_agent(model, shell, "claude", "claude")
+}
+
+fn spawn_codex(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    spawn_agent(model, shell, "codex", "codex")
+}
+
+fn spawn_pi(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    spawn_agent(model, shell, "pi", "pi")
+}
+
+fn selected_group(model: &Model, shell: &Shell) -> Option<String> {
+    crate::update::selected_group_name_public(model, shell)
+}
+
+fn create_group(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "group:".to_string();
+    vec![]
+}
+
+fn join_group(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "join:".to_string();
+    vec![]
+}
+
+fn leave_group(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    if let Some(name) = selected_group(model, shell) {
+        shell.insert_mode = true;
+        shell.focus = crate::shell::FocusTarget::Input;
+        shell.input_buf = format!("leave:{name}");
+    } else {
+        shell.push_toast("No group selected".into());
+    }
+    vec![]
+}
+
+fn broadcast_to_group(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    if let Some(name) = selected_group(model, shell) {
+        shell.insert_mode = true;
+        shell.focus = crate::shell::FocusTarget::Input;
+        shell.input_buf = format!("broadcast:{name} ");
+    } else {
+        shell.push_toast("No group selected".into());
+    }
+    vec![]
 }
 
 // ───────────────────────── 过滤 + 匹配 ─────────────────────────

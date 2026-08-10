@@ -107,7 +107,7 @@ fn dispatch_cmd(
         "group_join" => cmd_group_join(&req, model, db),
         "group_leave" => cmd_group_leave(&req, model, db),
         "group_members" => cmd_group_members(&req, model),
-        "broadcast" => SocketResp::err("broadcast not yet supported"),
+        "broadcast" => cmd_broadcast(&req, model),
         other => SocketResp::err(format!("unknown cmd: {other}")),
     }
 }
@@ -190,6 +190,54 @@ fn cmd_group_members(req: &crate::msg::SocketReq, model: &Arc<RwLock<Model>>) ->
         }
         None => SocketResp::err(format!("group not found: {name}")),
     }
+}
+
+/// broadcast: 向群组所有成员发送编排消息。
+/// 从 model 读取成员列表, 逐个调用 transport::orchestration_send。
+fn cmd_broadcast(req: &crate::msg::SocketReq, model: &Arc<RwLock<Model>>) -> SocketResp {
+    let name = match &req.name {
+        Some(n) if !n.is_empty() => n.clone(),
+        _ => return SocketResp::err("broadcast requires \"name\""),
+    };
+    let message = match &req.message {
+        Some(m) if !m.is_empty() => m.clone(),
+        _ => return SocketResp::err("broadcast requires \"message\""),
+    };
+
+    let members: Vec<String> = {
+        let m = model.read();
+        match m.groups.get(&name) {
+            Some(set) => set.iter().cloned().collect(),
+            None => return SocketResp::err(format!("group not found: {name}")),
+        }
+    };
+
+    if members.is_empty() {
+        return SocketResp::ok(serde_json::json!({
+            "action": "broadcast",
+            "group": &name,
+            "sent": 0,
+            "failed": 0,
+        }));
+    }
+
+    // 逐个发送, 收集结果
+    let subject = format!("[{name}] broadcast");
+    let mut ok_count = 0usize;
+    let mut fail_count = 0usize;
+    for handle in &members {
+        match crate::transport::orchestration_send(handle, &subject, &message) {
+            Ok(_) => ok_count += 1,
+            Err(_) => fail_count += 1,
+        }
+    }
+
+    SocketResp::ok(serde_json::json!({
+        "action": "broadcast",
+        "group": &name,
+        "sent": ok_count,
+        "failed": fail_count,
+    }))
 }
 
 // ───────────────────────── 响应类型 ─────────────────────────

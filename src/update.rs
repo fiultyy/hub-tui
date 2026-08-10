@@ -56,6 +56,10 @@ pub enum Cmd {
     ReadTerminal { handle: String },
     /// spawn: worktree ps 编排摘要。
     RefreshWorktreePs,
+    /// 群组 broadcast: 向群组所有成员发消息(handles 由 update 从 model 提取)。
+    GroupBroadcast { name: String, message: String, handles: Vec<String> },
+    /// spawn: 创建新终端(orca terminal create)。
+    CreateTerminal { worktree: Option<String>, command: String, title: Option<String> },
     /// 无操作。
     Noop,
     /// 退出。
@@ -183,6 +187,19 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![]
         }
 
+        // ──── terminal create 成功 ────
+        AppMsg::TerminalCreated { handle, title } => {
+            let label = title.as_deref().unwrap_or(&handle);
+            shell.push_toast(format!("Created: {label}"));
+            // 刷新通信录,让新终端出现在 Directory
+            vec![Cmd::RefreshAgents, Cmd::WriteDirectory]
+        }
+        // ──── 群组操作成功 ────
+        AppMsg::GroupActionOk(msg) => {
+            shell.push_toast(msg);
+            vec![Cmd::RefreshAgents]
+        }
+
         // ──── 信息 toast ────
         AppMsg::Info(msg) => {
             shell.push_toast(msg);
@@ -212,8 +229,8 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.filter_active {
         return handle_filter_key(model, shell, k);
     }
-    // 浮层激活时(overlay_content / worktree_ps),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active {
+    // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet),键盘走浮层处理
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -242,6 +259,13 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             return vec![Cmd::RefreshWorktreePs];
         }
 
+        // ?: cheatsheet 浮层
+        (KeyCode::Char('?'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.cheatsheet_active = true;
+            shell.overlay_scroll = 0;
+            return vec![];
+        }
+
         (KeyCode::Char('q'), KeyModifiers::NONE) if !shell.insert_mode => {
             return vec![Cmd::Quit];
         }
@@ -254,6 +278,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             shell.tab = shell.tab.next();
             shell.cursor = 0;
             shell.insert_mode = false;
+            shell.group_detail_active = false;
             shell.input_buf.clear();
             // 同步 focus 到对应 tab
             shell.focus = match shell.tab {
@@ -354,16 +379,30 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             vec![]
         }
 
-        // Enter(in Directory tab): 选中 agent, 进入输入模式准备发送
-        (KeyCode::Enter, KeyModifiers::NONE) => {
-            let selected_handle = selected_agent_handle(model, shell);
-            if let Some(handle) = selected_handle {
-                shell.insert_mode = true;
-                shell.focus = FocusTarget::Input;
-                shell.input_buf = format!("to:{handle} ");
+        // Enter: 按 tab 分流
+        (KeyCode::Enter, KeyModifiers::NONE) => match shell.tab {
+            Tab::Directory => {
+                // 选中 agent, 进入输入模式准备发送
+                let selected_handle = selected_agent_handle(model, shell);
+                if let Some(handle) = selected_handle {
+                    shell.insert_mode = true;
+                    shell.focus = FocusTarget::Input;
+                    shell.input_buf = format!("to:{handle} ");
+                }
+                vec![]
             }
-            vec![]
-        }
+            Tab::Groups => {
+                // 选中群组: 切换成员详情浮层
+                if selected_group_name(model, shell).is_some() {
+                    shell.group_detail_active = !shell.group_detail_active;
+                    if shell.group_detail_active {
+                        shell.overlay_scroll = 0;
+                    }
+                }
+                vec![]
+            }
+            Tab::Messages => vec![],
+        },
         // s(in Directory tab): switch/activate selected agent's tab
         (KeyCode::Char('s'), KeyModifiers::NONE) => {
             let selected_handle = selected_agent_handle(model, shell);
@@ -424,6 +463,102 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
                     return vec![];
                 }
                 return vec![Cmd::RenameTerminal { handle: handle.to_string(), new_title: title.to_string() }];
+            }
+
+            // 解析 "group:<name>" 格式(创建群组并自动加入)
+            if let Some(name) = buf.strip_prefix("group:") {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    return vec![];
+                }
+                let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+                if !self_handle.is_empty() {
+                    model.groups.entry(name.clone()).or_default().insert(self_handle.clone());
+                }
+                _shell.push_toast(format!("Joined group: {name}"));
+                return vec![Cmd::PersistGroupJoin { name: name.clone(), handle: self_handle }, Cmd::WriteDirectory];
+            }
+
+            // 解析 "join:<group>" 格式(加入群组,用 self_handle)
+            if let Some(rest) = buf.strip_prefix("join:") {
+                let group_name = rest.trim().to_string();
+                if group_name.is_empty() {
+                    return vec![];
+                }
+                let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+                if self_handle.is_empty() {
+                    _shell.push_toast("ORCA_TERMINAL_HANDLE not set".into());
+                    return vec![];
+                }
+                model.groups.entry(group_name.clone()).or_default().insert(self_handle.clone());
+                _shell.push_toast(format!("Joined group: {group_name}"));
+                return vec![Cmd::PersistGroupJoin { name: group_name.clone(), handle: self_handle }, Cmd::WriteDirectory];
+            }
+
+            // 解析 "leave:<group>" 格式(退出群组)
+            if let Some(name) = buf.strip_prefix("leave:") {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    return vec![];
+                }
+                let self_handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+                if !self_handle.is_empty() {
+                    if let Some(members) = model.groups.get_mut(&name) {
+                        members.remove(&self_handle);
+                        if members.is_empty() {
+                            model.groups.remove(&name);
+                        }
+                    }
+                }
+                _shell.push_toast(format!("Left group: {name}"));
+                return vec![Cmd::PersistGroupLeave { name: name.clone(), handle: self_handle }, Cmd::WriteDirectory];
+            }
+
+            // 解析 "broadcast:<group> <message>" 格式(群组广播)
+            if let Some(rest) = buf.strip_prefix("broadcast:") {
+                let parts: Vec<&str> = rest.trim_start().splitn(2, ' ').collect();
+                let group_name = match parts.first() {
+                    Some(&n) if !n.is_empty() => n.to_string(),
+                    _ => return vec![],
+                };
+                let message = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+                if message.is_empty() {
+                    return vec![];
+                }
+                // 从 model 提取群组成员 handles
+                let handles: Vec<String> = model.groups
+                    .get(&group_name)
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_default();
+                if handles.is_empty() {
+                    _shell.push_toast(format!("group '{group_name}' has no members"));
+                    return vec![];
+                }
+                return vec![Cmd::GroupBroadcast { name: group_name, message, handles }];
+            }
+
+            // 解析 "create:command" 格式(在当前 worktree 创建终端)
+            // 解析 "create:worktree:command" 格式(指定 worktree 创建终端)
+            if let Some(rest) = buf.strip_prefix("create:") {
+                if rest.is_empty() {
+                    return vec![];
+                }
+                // 检查是否包含第二个 ':' (worktree:command)
+                if let Some((wt, cmd)) = rest.split_once(':') {
+                    if !cmd.is_empty() {
+                        return vec![Cmd::CreateTerminal {
+                            worktree: Some(wt.to_string()),
+                            command: cmd.to_string(),
+                            title: None,
+                        }];
+                    }
+                }
+                // 无第二个 ':' → 纯 command
+                return vec![Cmd::CreateTerminal {
+                    worktree: None,
+                    command: rest.to_string(),
+                    title: None,
+                }];
             }
 
             vec![]
@@ -516,7 +651,7 @@ fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.cursor = 0;
             vec![]
         }
-        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) if c != 'j' && c != 'k' => {
             if let Some(q) = shell.filter_query.as_mut() {
                 q.push(c);
             }
@@ -545,6 +680,8 @@ fn handle_overlay_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec
             shell.overlay_content = None;
             shell.overlay_scroll = 0;
             shell.worktree_ps_active = false;
+            shell.group_detail_active = false;
+            shell.cheatsheet_active = false;
             vec![]
         }
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
@@ -602,6 +739,20 @@ fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
         directory_sorted_handles(&model.directory)
     };
     handles.get(shell.cursor).cloned()
+}
+
+/// 当前选中群组名(用于群组操作)。pub 供 command.rs 使用。
+pub fn selected_group_name_public(model: &Model, shell: &Shell) -> Option<String> {
+    selected_group_name(model, shell)
+}
+
+fn selected_group_name(model: &Model, shell: &Shell) -> Option<String> {
+    if shell.tab != Tab::Groups {
+        return None;
+    }
+    let mut names: Vec<String> = model.groups.keys().cloned().collect();
+    names.sort();
+    names.get(shell.cursor).cloned()
 }
 
 /// 鼠标点击命中测试: (x, y) 是否落在某个 agent card 上,返回 sorted index。
