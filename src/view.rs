@@ -95,6 +95,11 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.config_overlay_active {
         draw_config_overlay(f, model, shell, area, &theme);
     }
+
+    // 编排任务浮层(t 键激活)
+    if shell.orch_tasks_active {
+        draw_orch_tasks_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -1359,6 +1364,116 @@ fn draw_config_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, 
     let start = shell.overlay_scroll.min(lines.len().saturating_sub(visible_h));
     let visible: Vec<Line> = lines[start..start.min(lines.len()).min(start + visible_h)].to_vec();
     f.render_widget(Paragraph::new(visible), inner);
+}
+
+// ───────────────────────── 编排任务浮层 ─────────────────────────
+
+/// 编排任务浮层: Runs / Tasks / Gates 三段统一视图。
+fn draw_orch_tasks_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    let overlay_h = area.height.saturating_sub(4).max(10);
+    let overlay_w = area.width.saturating_sub(4).max(50);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+
+    f.render_widget(ratatui::widgets::Clear, Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+    let border = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " Orchestration (j/k: scroll, Esc: close) ",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = border.inner(Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+    f.render_widget(border, Rect {
+        x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h,
+    });
+
+    let snap = match &model.orch_snapshot {
+        Some(s) => s,
+        None => {
+            f.render_widget(
+                Paragraph::new(Span::styled("(loading...)", Style::default().fg(theme.muted))),
+                inner,
+            );
+            return;
+        }
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Runs 段
+    lines.push(Line::from(Span::styled(
+        format!(" Runs ({})", snap.runs.len()),
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    for r in &snap.runs {
+        let color = status_color(&r.status, theme);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", status_icon(&r.status)), Style::default().fg(color)),
+            Span::styled(&r.title, Style::default().fg(theme.fg)),
+            Span::styled(format!(" ({})", r.status), Style::default().fg(theme.muted)),
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    // Tasks 段
+    lines.push(Line::from(Span::styled(
+        format!(" Tasks ({})", snap.tasks.len()),
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    for t in &snap.tasks {
+        let color = status_color(&t.status, theme);
+        let assignee = t.assignee.as_deref().unwrap_or("-");
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", status_icon(&t.status)), Style::default().fg(color)),
+            Span::styled(&t.title, Style::default().fg(theme.fg)),
+            Span::styled(format!(" \u{2192} {}", assignee), Style::default().fg(theme.muted)),
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    // Gates 段
+    lines.push(Line::from(Span::styled(
+        format!(" Gates ({})", snap.gates.len()),
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    for g in &snap.gates {
+        let color = status_color(&g.status, theme);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", status_icon(&g.status)), Style::default().fg(color)),
+            Span::styled(&g.title, Style::default().fg(theme.fg)),
+        ]));
+    }
+
+    let visible_h = inner.height as usize;
+    let start = shell.overlay_scroll.min(lines.len().saturating_sub(visible_h));
+    let visible: Vec<Line> = lines[start..start.min(lines.len()).min(start + visible_h)].to_vec();
+    f.render_widget(Paragraph::new(visible), inner);
+}
+
+/// 状态 → 图标。
+fn status_icon(status: &str) -> &'static str {
+    match status.to_ascii_lowercase().as_str() {
+        s if s.contains("run") || s.contains("work") || s.contains("busy") => "\u{23f3}", // ⏳
+        s if s.contains("done") || s.contains("ok") || s.contains("complete") => "\u{2713}", // ✓
+        s if s.contains("block") || s.contains("wait") || s.contains("pending") => "\u{23f4}", // ⏴
+        s if s.contains("fail") || s.contains("error") => "\u{2717}", // ✗
+        _ => "\u{00b7}", // ·
+    }
+}
+
+/// 状态 → 颜色。
+fn status_color(status: &str, theme: &Theme) -> Color {
+    match status.to_ascii_lowercase().as_str() {
+        s if s.contains("run") || s.contains("work") || s.contains("busy") => theme.working,
+        s if s.contains("done") || s.contains("ok") => theme.idle,
+        s if s.contains("block") || s.contains("fail") => theme.error,
+        _ => theme.muted,
+    }
 }
 
 #[cfg(test)]

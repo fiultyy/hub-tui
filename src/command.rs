@@ -166,6 +166,16 @@ pub fn builtin_commands() -> Vec<Command> {
             set_config,
         ),
         Command::new(
+            "reply to message",
+            "Reply to the selected message in Messages tab (enter reply mode)",
+            reply_message,
+        ),
+        Command::new(
+            "show tasks",
+            "Show orchestration tasks/runs/gates overview",
+            show_tasks,
+        ),
+        Command::new(
             "quit",
             "Exit hub-tui",
             quit,
@@ -241,6 +251,27 @@ fn enter_filter(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 
 fn quit(_model: &Model, _shell: &mut Shell) -> Vec<Cmd> {
     vec![Cmd::Quit]
+}
+
+fn reply_message(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.tab = crate::shell::Tab::Messages;
+    shell.focus = crate::shell::FocusTarget::Messages;
+    let msgs: Vec<_> = model.messages.iter().rev().collect();
+    if let Some(msg) = msgs.get(shell.cursor) {
+        let id = &msg.id;
+        shell.insert_mode = true;
+        shell.focus = crate::shell::FocusTarget::Input;
+        shell.input_buf = format!("reply:{id} ");
+    } else {
+        shell.push_toast("No message selected".into());
+    }
+    vec![]
+}
+
+fn show_tasks(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.orch_tasks_active = true;
+    shell.overlay_scroll = 0;
+    vec![Cmd::RefreshOrchTasks]
 }
 
 fn inject_pty(model: &Model, shell: &mut Shell) -> Vec<Cmd> {

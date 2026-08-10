@@ -89,6 +89,9 @@ pub struct Shell {
     pub group_detail_active: bool,
     /// cheatsheet 浮层激活(? 键)。
     pub cheatsheet_active: bool,
+    /// 编排任务浮层激活(t 键)。
+    pub orch_tasks_active: bool,
+    /// worktree ps 浮层激活(w 键)。
     pub worktree_ps_active: bool,
     /// config overlay 激活(show config 浮层)。
     pub config_overlay_active: bool,
@@ -117,6 +120,7 @@ impl Shell {
             overlay_scroll: 0,
             group_detail_active: false,
             cheatsheet_active: false,
+            orch_tasks_active: false,
             worktree_ps_active: false,
             config_overlay_active: false,
             generation: 0,

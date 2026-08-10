@@ -206,8 +206,9 @@ pub struct Model {
     /// 可能 StatusUpdated 先到但 directory 为空。缓存到这,AgentsLoaded 时合并。
     pub pending_status: HashMap<String, StatusJoin>,
     pub unread_counts: HashMap<String, usize>,
-    /// worktree ps 编排摘要(按需刷新)。
     pub worktree_ps: Vec<WorktreePsEntry>,
+    /// 编排快照(按需刷新,t 键触发)。
+    pub orch_snapshot: Option<OrchSnapshot>,
     /// 配置 key-value store(启动从 DB 加载,运行时变更持久化)。
     pub config: HashMap<String, String>,
 }
@@ -222,6 +223,7 @@ impl Model {
             pending_status: HashMap::new(),
             unread_counts: HashMap::new(),
             worktree_ps: Vec::new(),
+            orch_snapshot: None,
             config: HashMap::new(),
         }
     }
@@ -355,6 +357,12 @@ impl Model {
     pub fn get_default_filter(&self) -> &str {
         self.config.get("default_filter").map(|s| s.as_str()).unwrap_or("")
     }
+
+    /// 更新编排快照。
+    pub fn apply_orch_snapshot(&mut self, snapshot: OrchSnapshot) {
+        self.orch_snapshot = Some(snapshot);
+        self.generation += 1;
+    }
 }
 
 /// worktree ps 条目(对齐 orca-ide worktree ps --json 输出)。
@@ -368,6 +376,49 @@ pub struct WorktreePsEntry {
     pub agent_count: usize,
     #[serde(default)]
     pub status: Option<String>,
+}
+
+/// 编排快照(run-list + task-list + gate-list 三合一)。
+#[derive(Clone, Debug, Default)]
+pub struct OrchSnapshot {
+    pub runs: Vec<OrchRunEntry>,
+    pub tasks: Vec<OrchTaskEntry>,
+    pub gates: Vec<OrchGateEntry>,
+}
+
+/// orchestration run 条目。
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct OrchRunEntry {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// orchestration task 条目。
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct OrchTaskEntry {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub assignee: Option<String>,
+}
+
+/// orchestration gate 条目。
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct OrchGateEntry {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
 }
 
 /// Directory 排序: 按 worktreePath 分组, 组间按最近活跃(max lastOutputAt)降序,

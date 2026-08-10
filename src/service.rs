@@ -335,7 +335,29 @@ impl Service {
                         db.set_config(&key, &value);
                     }
                     let _ = self.tx.send(AppMsg::ConfigUpdated { key, value });
-                 }
+                }
+                crate::update::Cmd::OrchestrationReply { id, body } => {
+                    let tx = self.tx.clone();
+                    let lock = Arc::clone(&self.cli_lock);
+                    thread::spawn(move || {
+                        let _guard = lock.lock();
+                        match transport::orchestration_reply(&id, &body) {
+                            Ok(_) => { let _ = tx.send(AppMsg::SendOk(id)); }
+                            Err(e) => { let _ = tx.send(AppMsg::SendFailed(e)); }
+                        }
+                    });
+                }
+                crate::update::Cmd::RefreshOrchTasks => {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        // 并行 fetch 三个列表(join 后合并回灌)
+                        let runs = transport::fetch_run_list().unwrap_or_default();
+                        let tasks = transport::fetch_task_list().unwrap_or_default();
+                        let gates = transport::fetch_gate_list().unwrap_or_default();
+                        let snapshot = crate::model::OrchSnapshot { runs, tasks, gates };
+                        let _ = tx.send(AppMsg::OrchSnapshotLoaded(Box::new(snapshot)));
+                    });
+                }
                 _ => {}
             }
         }

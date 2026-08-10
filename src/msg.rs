@@ -79,6 +79,8 @@ pub enum AppMsg {
     TerminalCreated { handle: String, title: Option<String> },
     /// 配置项更新成功(key, value)。
     ConfigUpdated { key: String, value: String },
+    /// 编排快照回灌(run-list + task-list + gate-list 三合一)。
+    OrchSnapshotLoaded(Box<crate::model::OrchSnapshot>),
     /// 通用错误。
     Error(String),
 }

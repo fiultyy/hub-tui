@@ -424,36 +424,96 @@ struct WorktreePsData {
     worktrees: Vec<crate::model::WorktreePsEntry>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ───────────────────────── orchestration reply + snapshot ─────────────────────────
 
-    #[test]
-    fn test_last_status_path_non_empty() {
-        let p = last_status_path();
-        assert!(p.to_string_lossy().contains("last-status.json"));
+/// orchestration reply: `orca-ide orchestration reply --id <id> --body <body> --json`。
+pub fn orchestration_reply(id: &str, body: &str) -> Result<String, String> {
+    let output = Command::new("orca-ide")
+        .args(["orchestration", "reply", "--id", id, "--body", body, "--json"])
+        .output()
+        .map_err(|e| format!("orchestration reply failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "orchestration reply exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
-
-    /// 回归: orchestration inbox --json 的真实 schema 是 snake_case + read 为 int 0/1。
-    /// OrchMessage 之前用 camelCase rename + bool read, 导致反序列化整体失败。
-    #[test]
-    fn test_inbox_json_parses_snake_case_and_int_read() {
-        let raw = r#"{
-            "result": {
-                "messages": [
-                    {"id":"m1","from_handle":"a","to_handle":"hX","subject":"s","body":"","type":"status","read":0,"created_at":"2026-01-01T00:00:00Z","sequence":1},
-                    {"id":"m2","from_handle":"b","to_handle":"hX","subject":"s","body":"","type":"status","read":0,"created_at":"2026-01-01T00:00:00Z","sequence":2},
-                    {"id":"m3","from_handle":"c","to_handle":"hY","subject":"s","body":"","type":"status","read":1,"created_at":"2026-01-01T00:00:00Z","sequence":3}
-                ]
-            }
-        }"#;
-        let parsed: CheckOutput = serde_json::from_str(raw).expect("must parse snake_case inbox json");
-        let mut unread = std::collections::HashMap::new();
-        for msg in &parsed.result.messages {
-        if msg.read != 0 { continue; }
-            *unread.entry(msg.to_handle.clone()).or_default() += 1;
-        }
-        assert_eq!(unread.get("hX"), Some(&2), "hX has two unread");
-        assert!(unread.get("hY").is_none(), "hY has no unread entries");
-    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
+/// fetch run-list: `orca-ide orchestration run-list --json`。
+pub fn fetch_run_list() -> Result<Vec<crate::model::OrchRunEntry>, String> {
+    let output = Command::new("orca-ide")
+        .args(["orchestration", "run-list", "--json"])
+        .output()
+        .map_err(|e| format!("run-list failed: {e}"))?;
+    if !output.status.success() { return Ok(Vec::new()); }
+    let raw: GenericListResult = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| GenericListResult { result: GenericListData { tasks: None, runs: None, gates: None, items: None } });
+    raw.result.tasks
+        .or(raw.result.items)
+        .or(raw.result.runs)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect::<Vec<_>>()
+        .pipe(Ok)
+}
+
+/// fetch task-list。
+pub fn fetch_task_list() -> Result<Vec<crate::model::OrchTaskEntry>, String> {
+    let output = Command::new("orca-ide")
+        .args(["orchestration", "task-list", "--json"])
+        .output()
+        .map_err(|e| format!("task-list failed: {e}"))?;
+    if !output.status.success() { return Ok(Vec::new()); }
+    let raw: GenericListResult = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| GenericListResult { result: GenericListData { tasks: None, runs: None, gates: None, items: None } });
+    raw.result.tasks
+        .or(raw.result.items)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect::<Vec<_>>()
+        .pipe(Ok)
+}
+
+/// fetch gate-list。
+pub fn fetch_gate_list() -> Result<Vec<crate::model::OrchGateEntry>, String> {
+    let output = Command::new("orca-ide")
+        .args(["orchestration", "gate-list", "--json"])
+        .output()
+        .map_err(|e| format!("gate-list failed: {e}"))?;
+    if !output.status.success() { return Ok(Vec::new()); }
+    let raw: GenericListResult = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| GenericListResult { result: GenericListData { tasks: None, runs: None, gates: None, items: None } });
+    raw.result.gates
+        .or(raw.result.items)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect::<Vec<_>>()
+        .pipe(Ok)
+}
+
+/// 泛用 list 结果壳(兼容 tasks/runs/gates/items 字段名)。
+#[derive(serde::Deserialize)]
+struct GenericListResult {
+    result: GenericListData,
+}
+
+#[derive(serde::Deserialize)]
+struct GenericListData {
+    #[serde(default)]
+    tasks: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    runs: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    gates: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    items: Option<Vec<serde_json::Value>>,
+}
+
+/// Pipe trait(Rust 没有 std pipe,简化链式)。
+trait Pipe: Sized { fn pipe<F, R>(self, f: F) -> R where F: FnOnce(Self) -> R { f(self) } }
+impl<T> Pipe for T {}

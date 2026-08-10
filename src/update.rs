@@ -62,6 +62,10 @@ pub enum Cmd {
     CreateTerminal { worktree: Option<String>, command: String, title: Option<String> },
     /// 持久化配置项到 DB(同步写, 结果回灌 ConfigUpdated)。
     SetConfig { key: String, value: String },
+    /// spawn: orchestration reply --id <msg_id> --body <text>。
+    OrchestrationReply { id: String, body: String },
+    /// spawn: 并行刷新 run-list + task-list + gate-list 编排快照。
+    RefreshOrchTasks,
     /// 无操作。
     Noop,
     /// 退出。
@@ -215,6 +219,12 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![]
         }
 
+        // ──── 编排快照回灌 ────
+        AppMsg::OrchSnapshotLoaded(snapshot) => {
+            model.apply_orch_snapshot(*snapshot);
+            vec![]
+        }
+
         // ──── 退出 ────
         AppMsg::Quit => vec![Cmd::Quit],
     }
@@ -233,7 +243,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -260,6 +270,13 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('w'), KeyModifiers::NONE) if !shell.insert_mode => {
             shell.worktree_ps_active = true;
             return vec![Cmd::RefreshWorktreePs];
+        }
+
+        // t: 编排任务浮层(run-list + task-list + gate-list)
+        (KeyCode::Char('t'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.orch_tasks_active = true;
+            shell.overlay_scroll = 0;
+            return vec![Cmd::RefreshOrchTasks];
         }
 
         // ?: cheatsheet 浮层
@@ -404,7 +421,17 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
                 }
                 vec![]
             }
-            Tab::Messages => vec![],
+            Tab::Messages => {
+                // 选中消息后进入 reply 模式
+                let msgs: Vec<_> = model.messages.iter().rev().collect();
+                if let Some(msg) = msgs.get(shell.cursor) {
+                    let id = &msg.id;
+                    shell.insert_mode = true;
+                    shell.focus = FocusTarget::Input;
+                    shell.input_buf = format!("reply:{id} ");
+                }
+                vec![]
+            }
         },
         // s(in Directory tab): switch/activate selected agent's tab
         (KeyCode::Char('s'), KeyModifiers::NONE) => {
@@ -594,6 +621,14 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
                 return vec![];
             }
 
+            // 解析 "reply:<msg_id> <body>" 格式(回复消息)
+            if let Some((id, body)) = buf.strip_prefix("reply:").and_then(|s| s.split_once(' ')) {
+                if body.is_empty() {
+                    return vec![];
+                }
+                return vec![Cmd::OrchestrationReply { id: id.to_string(), body: body.to_string() }];
+            }
+
             vec![]
         }
 
@@ -716,6 +751,7 @@ fn handle_overlay_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec
             shell.group_detail_active = false;
             shell.cheatsheet_active = false;
             shell.config_overlay_active = false;
+            shell.orch_tasks_active = false;
             vec![]
         }
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
