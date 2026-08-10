@@ -397,7 +397,7 @@ fn draw_agent_card(
     let cwd_str = crate::render::truncate_width(&cwd_display, cwd_max);
     let cwd_w = UnicodeWidthStr::width(cwd_str.as_str());
     let line2 = Line::from(vec![
-        Span::styled(" ", bg_style),
+        Span::styled("▌", Style::default().fg(bar_fg).bg(bg)),
         Span::styled(" ", bg_style),
         Span::styled(cwd_str, Style::default().fg(theme.muted).bg(bg)),
         Span::styled(" ".repeat(avail.saturating_sub(indent + cwd_w)), bg_style),
@@ -419,7 +419,7 @@ fn draw_agent_card(
     );
     let meta_w = UnicodeWidthStr::width(meta_str.as_str());
     let line3 = Line::from(vec![
-        Span::styled(" ", bg_style),
+        Span::styled("▌", Style::default().fg(bar_fg).bg(bg)),
         Span::styled(" ", bg_style),
         Span::styled(
             meta_str,
