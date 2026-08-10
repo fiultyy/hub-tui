@@ -452,7 +452,10 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.filter_active {
         return handle_filter_key(model, shell, k);
     }
-    // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config / alias_overlay / hotkeys),键盘走浮层处理
+    // Quick-Switch 激活时,键盘走快速跳转处理
+    if shell.quickswitch_active {
+        return handle_quickswitch_key(model, shell, k);
+    }
     if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
@@ -620,6 +623,14 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('z'), KeyModifiers::NONE) if !shell.insert_mode => {
             shell.theme_overlay_active = !shell.theme_overlay_active;
             if shell.theme_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+
+        // v: agent quick-switch overlay
+        (KeyCode::Char('v'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.quickswitch_active = true;
+            shell.quickswitch_query.clear();
+            shell.quickswitch_cursor = 0;
             return vec![];
         }
 
@@ -1803,6 +1814,85 @@ fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
     }
 }
 
+
+// ───────────────────────── Quick-Switch 键盘处理 ─────────────────────────
+
+/// Quick-Switch: fuzzy 搜索 agent handle/title/cwd, Enter 跳转 cursor。
+fn handle_quickswitch_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+    // 计算匹配的 handles (复用 directory 排序 + 模糊匹配)
+    let sorted = crate::model::directory_sorted_with_mode(
+        &model.directory, model.sort_mode(), &model.pinned,
+    );
+    let q = shell.quickswitch_query.to_ascii_lowercase();
+    let matches: Vec<String> = if q.is_empty() {
+        sorted
+    } else {
+        sorted.into_iter().filter(|h| {
+            let agent = match model.directory.get(h) { Some(a) => a, None => return false };
+            let title = agent.title.as_deref().unwrap_or("").to_ascii_lowercase();
+            let cwd = agent.cwd.to_ascii_lowercase();
+            let handle = h.to_ascii_lowercase();
+            handle.contains(&q) || title.contains(&q) || cwd.contains(&q)
+        }).collect()
+    };
+
+    match (k.code, k.modifiers) {
+        (KeyCode::Esc, _) => {
+            shell.quickswitch_active = false;
+            shell.quickswitch_query.clear();
+            shell.quickswitch_cursor = 0;
+            vec![]
+        }
+        (KeyCode::Enter, _) => {
+            shell.quickswitch_active = false;
+            shell.quickswitch_query.clear();
+            // 跳转到选中的 agent: 在完整 sorted 列表中找到 cursor 对应的 handle
+            let full_sorted = crate::model::directory_sorted_with_mode(
+                &model.directory, model.sort_mode(), &model.pinned,
+            );
+            let full_sorted = crate::model::apply_focus_filter(
+                full_sorted, shell.focus_mode, &shell.selected_set,
+            );
+            if let Some(target) = matches.get(shell.quickswitch_cursor) {
+                // 找到 target 在 full_sorted 中的 index
+                if let Some(idx) = full_sorted.iter().position(|h| h == target) {
+                    shell.cursor = idx;
+                    shell.tab = Tab::Directory;
+                    shell.focus = FocusTarget::Directory;
+                }
+            }
+            shell.quickswitch_cursor = 0;
+            vec![]
+        }
+        (KeyCode::Backspace, _) => {
+            shell.quickswitch_query.pop();
+            shell.quickswitch_cursor = 0;
+            vec![]
+        }
+        (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
+            if !matches.is_empty() {
+                shell.quickswitch_cursor = (shell.quickswitch_cursor + 1) % matches.len();
+            }
+            vec![]
+        }
+        (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
+            if !matches.is_empty() {
+                if shell.quickswitch_cursor == 0 {
+                    shell.quickswitch_cursor = matches.len() - 1;
+                } else {
+                    shell.quickswitch_cursor -= 1;
+                }
+            }
+            vec![]
+        }
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            shell.quickswitch_query.push(c);
+            shell.quickswitch_cursor = 0;
+            vec![]
+        }
+        _ => vec![],
+    }
+}
 fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     // Quick actions overlay: highest priority, handles its own keys with early return
     if shell.quick_actions_active {

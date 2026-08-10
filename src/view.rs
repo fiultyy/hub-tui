@@ -157,6 +157,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.theme_overlay_active {
         draw_theme_overlay(f, model, shell, area, &theme);
     }
+
+    if shell.quickswitch_active {
+        draw_quickswitch_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -1637,6 +1641,7 @@ fn draw_orch_tasks_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Re
                 Paragraph::new(Span::styled("(loading...)", Style::default().fg(theme.muted))),
                 inner,
             );
+
             return;
         }
     };
@@ -2607,6 +2612,57 @@ fn draw_theme_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, t
     let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
     let end = (start + visible_h).min(total);
     f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+/// Quick-Switch 浮层: fuzzy 搜索 agent, 选中后跳转 cursor。
+fn draw_quickswitch_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
+    let sorted = crate::model::directory_sorted_with_mode(
+        &model.directory, model.sort_mode(), &model.pinned,
+    );
+    let q = shell.quickswitch_query.to_ascii_lowercase();
+    let matches: Vec<&String> = if q.is_empty() {
+        sorted.iter().collect()
+    } else {
+        sorted.iter().filter(|h| {
+            let agent = match model.directory.get(*h) { Some(a) => a, None => return false };
+            let title = agent.title.as_deref().unwrap_or("").to_ascii_lowercase();
+            let cwd = agent.cwd.to_ascii_lowercase();
+            h.to_ascii_lowercase().contains(&q) || title.contains(&q) || cwd.contains(&q)
+        }).collect()
+    };
+    let overlay_h = (area.height / 2).min(20).max(8);
+    let overlay_w = area.width.saturating_sub(8).max(50);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect { x: overlay_x, y: overlay_y, width: overlay_w, height: overlay_h };
+    f.render_widget(Clear, overlay_area);
+    let title = if shell.quickswitch_query.is_empty() {
+        " Jump to Agent (type to search, Esc:cancel) ".to_string()
+    } else {
+        format!(" Jump to Agent: '{}' ({} matches, Esc:cancel) ", shell.quickswitch_query, matches.len())
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(title, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+    let items: Vec<ListItem> = matches.iter().map(|h| {
+        let agent = match model.directory.get(*h) { Some(a) => a, None => return ListItem::new(h.to_string()) };
+        let title = agent.title.as_deref().unwrap_or("");
+        let state = agent.state.as_deref().unwrap_or("");
+        ListItem::new(Line::from(vec![
+            Span::styled(format!(" {}", h), Style::default().fg(theme.accent)),
+            Span::styled(format!(" {}", title), Style::default().fg(theme.fg)),
+            Span::styled(format!(" [{}]", state), Style::default().fg(theme.muted)),
+        ]))
+    }).collect();
+    let mut list_state = ListState::default();
+    list_state.select(Some(shell.quickswitch_cursor.min(matches.len().saturating_sub(1))));
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(theme.selection_bg).fg(theme.selection_fg).add_modifier(Modifier::BOLD));
+    f.render_stateful_widget(list, inner, &mut list_state);
 }
 
 #[cfg(test)]

@@ -151,6 +151,12 @@ pub struct Shell {
     pub hotkeys_overlay_active: bool,
     /// Theme customization 浮层激活(z 键)。
     pub theme_overlay_active: bool,
+    /// Quick-Switch 浮层激活(v 键)。
+    pub quickswitch_active: bool,
+    /// Quick-Switch 查询输入。
+    pub quickswitch_query: String,
+    /// Quick-Switch 选中索引。
+    pub quickswitch_cursor: usize,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
@@ -209,6 +215,9 @@ impl Shell {
             alias_overlay_active: false,
             hotkeys_overlay_active: false,
             theme_overlay_active: false,
+            quickswitch_active: false,
+            quickswitch_query: String::new(),
+            quickswitch_cursor: 0,
             theme_name: "default".to_string(),
             generation: 0,
         }
