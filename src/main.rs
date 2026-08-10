@@ -7,6 +7,7 @@
 //! - ADR-5: 数据源 = orca-ide terminal list + last-status.json watch
 //! - ADR-6: 双通道发现 (hub-directory.json + socket)
 //! - ADR-7: send 幂等回灌
+mod db;
 mod msg;
 mod model;
 mod render;
@@ -44,10 +45,26 @@ fn main() -> io::Result<()> {
 
     let model = Arc::new(RwLock::new(Model::new()));
     let mut shell = Shell::new();
-    let mut svc = Service::new(tx.clone());
+    let (mut svc, bootstrap) = Service::new(tx.clone());
 
-    // T3: 启动 Unix socket 服务端(ADR-3+ADR-6)
-    let _socket = SocketServer::start(model.clone());
+    // 从 DB 恢复数据(fast startup paint)
+    {
+        let mut mdl = model.write();
+        for agent in bootstrap.agents {
+            mdl.directory.insert(agent.handle.clone(), agent);
+        }
+        mdl.groups = bootstrap.groups;
+        for msg in bootstrap.messages {
+            mdl.push_message(msg);
+        }
+        mdl.generation += 1; // 触发 hub-directory.json 写出
+    }
+
+    // T3: 启动 Unix socket 服务端(ADR-3+ADR-6 + DB persistence)
+    let _socket = match svc.db.clone() {
+        Some(db) => SocketServer::start(model.clone(), db),
+        None => return Err(io::Error::new(io::ErrorKind::Other, "no db for socket server")),
+    };
 
     // T2: 启动时立即拉一次数据(ADR-5)
     svc.execute(vec![update::Cmd::RefreshAgents]);

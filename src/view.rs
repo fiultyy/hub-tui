@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::model::Model;
+use crate::model::{directory_sorted_handles, Model, StatusCategory};
 use crate::render::blocks;
 use crate::render::theme::Theme;
 use crate::shell::{ConnState, Shell, Tab};
@@ -121,13 +121,143 @@ fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
     }
 }
 
-/// Directory tab: agent card 网格(色块底色,无边框)。
+// ───────────────────────── 布局常量 + 类型(draw + hit_test 共享) ─────────────────────────
+
+/// 卡片宽度(字符)。
+pub const CARD_W: u16 = 36;
+/// 卡片内容高度(行)。
+pub const CARD_H: u16 = 3;
+/// 卡片间距(行/列)。
+pub const CARD_GAP: u16 = 1;
+/// 分区标题高度。
+pub const SECTION_HEADER_H: u16 = 1;
+/// 分区间距。
+pub const SECTION_GAP: u16 = 1;
+
+/// 布局项: 分区标题或卡片。
+#[derive(Debug)]
+pub enum LayoutItem {
+    SectionHeader { category: StatusCategory, count: usize },
+    Card { sorted_idx: usize },
+}
+
+/// 布局项 + 绝对位置(y 从内容顶部起算, 非 screen 坐标)。
+#[derive(Debug)]
+pub struct LayoutEntry {
+    pub item: LayoutItem,
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+}
+
+/// 计算完整 Directory 布局(所有分区标题 + 卡片)。
+/// sorted 必须已按 directory_sorted_handles 排序。
+/// 返回内容顶部的绝对 y 坐标列表(不含 scroll 偏移)。
+pub fn directory_layout(
+    sorted: &[String],
+    model: &Model,
+    inner_x: u16,
+    inner_w: u16,
+) -> Vec<LayoutEntry> {
+    let cols = (((inner_w + CARD_GAP) / (CARD_W + CARD_GAP)).max(1)) as usize;
+    let mut entries = Vec::new();
+    let mut y: u16 = 0;
+
+    let mut i = 0;
+    while i < sorted.len() {
+        let agent = &model.directory[&sorted[i]];
+        let cat = StatusCategory::from_agent(agent);
+
+        // 收集同分类的连续句柄(sorted 保证连续)
+        let group_start = i;
+        while i < sorted.len() {
+            let a = &model.directory[&sorted[i]];
+            if StatusCategory::from_agent(a) != cat {
+                break;
+            }
+            i += 1;
+        }
+        let count = i - group_start;
+
+        // 分区标题
+        entries.push(LayoutEntry {
+            item: LayoutItem::SectionHeader { category: cat, count },
+            x: inner_x,
+            y,
+            w: inner_w,
+            h: SECTION_HEADER_H,
+        });
+        y += SECTION_HEADER_H;
+
+        // 卡片网格
+        for card_i in 0..count {
+            let col = (card_i % cols) as u16;
+            let row = (card_i / cols) as u16;
+            let sorted_idx = group_start + card_i;
+            entries.push(LayoutEntry {
+                item: LayoutItem::Card { sorted_idx },
+                x: inner_x + col * (CARD_W + CARD_GAP),
+                y: y + row * (CARD_H + CARD_GAP),
+                w: CARD_W,
+                h: CARD_H,
+            });
+        }
+
+        // 推进 y 跳过所有卡片行(含 gap)
+        let rows_needed = ((count + cols - 1) / cols).max(1) as u16;
+        y += rows_needed * (CARD_H + CARD_GAP);
+        y += SECTION_GAP;
+    }
+
+    entries
+}
+
+/// 根据 cursor 位置计算 scroll 偏移(纯函数, 无存储状态)。
+/// 策略: 尽量把 cursor 所在分区的标题对齐到视口顶部;
+/// 若分区太高导致 cursor 超出视口, 则滚动到刚好露出 cursor 底部。
+pub fn directory_scroll(cursor: usize, layout: &[LayoutEntry], visible_h: u16) -> u16 {
+    let content_h = layout.iter().map(|e| e.y + e.h).max().unwrap_or(0);
+    let max_scroll = content_h.saturating_sub(visible_h);
+
+    let mut section_y = 0u16;
+    for entry in layout {
+        match &entry.item {
+            LayoutItem::SectionHeader { .. } => {
+                section_y = entry.y;
+            }
+            LayoutItem::Card { sorted_idx } if *sorted_idx == cursor => {
+                let cursor_bottom = entry.y + entry.h;
+                // 分区对齐: 若 cursor 在视口内, 用 section_y
+                if cursor_bottom <= section_y + visible_h {
+                    return section_y.min(max_scroll);
+                }
+                // 分区太高: 滚动到刚好露出 cursor
+                return cursor_bottom.saturating_sub(visible_h).min(max_scroll);
+            }
+            _ => {}
+        }
+    }
+    0
+}
+
+/// 状态分类 → 主题色映射。
+fn category_color(cat: StatusCategory, theme: &Theme) -> Color {
+    match cat {
+        StatusCategory::Working => theme.working,
+        StatusCategory::Waiting => theme.accent,
+        StatusCategory::Blocked => theme.error,
+        StatusCategory::Error => theme.error,
+        StatusCategory::Done => theme.idle,
+        StatusCategory::Unknown => theme.muted,
+    }
+}
+
+/// Directory tab: agent card 按状态分区垂直堆叠。
 ///
-/// 每个 card 3 行高(纯色块底色):
-///   ● term_fca57171…              Pi   ← 连接灯 + handle + title
-///   📁 ~/.orca                          ← cwd
-///   omp · running (main)               ← source · state (branch)
-/// card 间 1 行/列间隔, 底色区分选中/连接/离线。
+/// 布局(从上到下): 每个状态分类一个分区, 先标题行后卡片网格。
+/// 卡片 3 行高(色块底色): handle+title / cwd / icon+source·state(branch)。
+/// 滚动: cursor 所在分区对齐视口顶部。
 fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     let focused = matches!(shell.focus, crate::shell::FocusTarget::Directory);
     let block = blocks::bordered_block("Directory", focused, theme);
@@ -143,42 +273,60 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
         return;
     }
 
-    let mut handles: Vec<&String> = model.directory.keys().collect();
-    handles.sort();
-    let total = handles.len();
+    let sorted = directory_sorted_handles(&model.directory);
+    let layout = directory_layout(&sorted, model, inner.x, inner.width);
+    let scroll_y = directory_scroll(shell.cursor, &layout, inner.height);
 
-    let card_w: u16 = 36;
-    let card_h: u16 = 4; // 3 content + 1 gap
-    let gap: u16 = 1;
-    let cols = ((inner.width + gap) / (card_w + gap)).max(1) as usize;
-    let rows_per_col = (inner.height / card_h) as usize;
-    let visible = cols * rows_per_col;
-
-    let scroll = if total <= visible {
-        0
-    } else {
-        (shell.cursor / visible) * visible
-    };
-
-    for (i, handle) in handles.iter().enumerate() {
-        if i < scroll || i >= scroll + visible {
+    for entry in &layout {
+        let adj_y = entry.y.saturating_sub(scroll_y) + inner.y;
+        if adj_y + entry.h <= inner.y || adj_y >= inner.bottom() {
             continue;
         }
-        let idx = i - scroll;
-        let col = idx % cols;
-        let row = idx / cols;
-        let x = inner.x + col as u16 * (card_w + gap);
-        let y = inner.y + row as u16 * card_h;
-        let card_area = Rect { x, y, width: card_w, height: 3 }; // 3 rows content
-
-        if card_area.bottom() > inner.bottom() {
-            break;
+        match &entry.item {
+            LayoutItem::SectionHeader { category, count } => {
+                draw_section_header(f, *category, *count, entry.x, adj_y, entry.w, theme);
+            }
+            LayoutItem::Card { sorted_idx } => {
+                if let Some(agent) = sorted.get(*sorted_idx).and_then(|h| model.directory.get(h)) {
+                    let is_selected = *sorted_idx == shell.cursor;
+                    let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h };
+                    draw_agent_card(f, agent, card_area, theme, is_selected);
+                }
+            }
         }
-
-        let agent = &model.directory[*handle];
-        let is_selected = i == shell.cursor;
-        draw_agent_card(f, agent, card_area, theme, is_selected);
     }
+}
+
+/// 渲染分区标题行: 图标 + 标签 + (数量) + 分隔线。
+fn draw_section_header(
+    f: &mut Frame,
+    category: StatusCategory,
+    count: usize,
+    x: u16,
+    y: u16,
+    w: u16,
+    theme: &Theme,
+) {
+    use unicode_width::UnicodeWidthStr;
+    let color = category_color(category, theme);
+    let prefix = format!(" {} {} ({}) ", category.icon(), category.label(), count);
+    let prefix_w = UnicodeWidthStr::width(prefix.as_str()) as u16;
+    let divider_w = w.saturating_sub(prefix_w);
+
+    let mut spans = vec![
+        Span::styled(prefix, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+    ];
+    if divider_w > 0 {
+        spans.push(Span::styled(
+            "\u{2500}".repeat(divider_w as usize),
+            Style::default().fg(theme.border),
+        ));
+    }
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect { x, y, width: w, height: 1 },
+    );
 }
 
 /// 渲染单个 agent card(纯色块底色,无边框,竖条状态指示)。
@@ -193,11 +341,12 @@ fn draw_agent_card(
 
     // 底色 + 左侧竖条色
     let (bg, bar_fg) = if selected {
-        (Color::Rgb(49, 62, 96), theme.accent)   // 蓝调底 surface1→mauve tint
+        (Color::Rgb(49, 62, 96), theme.accent)
     } else if agent.connected {
-        (Color::Rgb(40, 41, 58), theme.success)   // 正常 connected
+        let cat = StatusCategory::from_agent(agent);
+        (Color::Rgb(40, 41, 58), category_color(cat, theme))
     } else {
-        (Color::Rgb(24, 24, 37), theme.muted)     // 离线/暗淡
+        (Color::Rgb(24, 24, 37), theme.muted)
     };
     let bg_style = Style::default().bg(bg);
 
@@ -252,7 +401,8 @@ fn draw_agent_card(
         Span::styled(" ".repeat(avail.saturating_sub(indent + cwd_w)), bg_style),
     ]);
 
-    // ── line 3: source · state (branch) ──
+    // ── line 3: icon + source · state (branch) ──
+    let cat = StatusCategory::from_agent(agent);
     let source = agent.source.as_deref().unwrap_or("-");
     let state = agent.state.as_deref().unwrap_or("-");
     let branch = if !agent.branch.is_empty() {
@@ -262,7 +412,7 @@ fn draw_agent_card(
     };
     let meta_max = avail.saturating_sub(indent + 2);
     let meta_str = crate::render::truncate_width(
-        &format!("{} · {}{}", source, state, branch),
+        &format!("{} {} · {}{}", cat.icon(), source, state, branch),
         meta_max,
     );
     let meta_w = UnicodeWidthStr::width(meta_str.as_str());

@@ -31,6 +31,77 @@ pub struct Agent {
     /// join 后补充(来自 last-status.json)
     pub state: Option<String>,
 }
+/// Directory 分区用: agent 状态分类。
+/// 排序值(derive Ord) = 分区显示顺序。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StatusCategory {
+    /// working/running/busy — 最高优先级显示
+    Working = 0,
+    /// waiting — 等待用户输入
+    Waiting = 1,
+    /// blocked — 被阻塞
+    Blocked = 2,
+    /// error/fail — 出错
+    Error = 3,
+    /// done/idle/ok — 已完成
+    Done = 4,
+    /// 无状态(join 未命中或 state=None) — 最低优先级
+    Unknown = 5,
+}
+
+impl StatusCategory {
+    /// 从 agent.state 字符串推断分类。
+    pub fn from_state(state: Option<&str>) -> Self {
+        match state {
+            Some(s) => {
+                let s = s.to_ascii_lowercase();
+                if s.contains("run") || s.contains("work") || s.contains("busy") {
+                    Self::Working
+                } else if s.contains("wait") {
+                    Self::Waiting
+                } else if s.contains("block") {
+                    Self::Blocked
+                } else if s.contains("error") || s.contains("fail") {
+                    Self::Error
+                } else if s.contains("done") || s.contains("idle") || s.contains("ok") {
+                    Self::Done
+                } else {
+                    Self::Unknown
+                }
+            }
+            None => Self::Unknown,
+        }
+    }
+
+    /// 状态图标(Unicode)。
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Working => "⠋",
+            Self::Waiting => "?",
+            Self::Blocked => "=",
+            Self::Error => "x",
+            Self::Done => "v",
+            Self::Unknown => "-",
+        }
+    }
+
+    /// 分区标题文本。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Working => "Working",
+            Self::Waiting => "Waiting",
+            Self::Blocked => "Blocked",
+            Self::Error => "Error",
+            Self::Done => "Done",
+            Self::Unknown => "No Status",
+        }
+    }
+
+    /// 从 agent 直接取分类。
+    pub fn from_agent(agent: &Agent) -> Self {
+        Self::from_state(agent.state.as_deref())
+    }
+}
 
 /// 编排消息(对齐 orca orchestration inbox --json)。
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -44,11 +115,18 @@ pub struct OrchMessage {
     pub body: String,
     #[serde(rename = "msgType")]
     pub msg_type: String,
-    pub priority: u8,
+    #[serde(default)]
+    pub priority: String,
     #[serde(rename = "threadId")]
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub payload: Option<String>,
+    #[serde(default)]
+    pub read: bool,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    #[serde(default)]
+    pub sequence: i64,
 }
 
 // ───────────────────────── Model ─────────────────────────
@@ -129,4 +207,16 @@ impl Model {
         }
         self.messages.push_back(msg);
     }
+}
+
+/// Directory 排序: 按 (状态分类 rank, handle) 排序。
+/// 所有 cursor/导航/hit_test 逻辑共享此排序, 保证分区一致性。
+pub fn directory_sorted_handles(directory: &HashMap<String, Agent>) -> Vec<String> {
+    let mut entries: Vec<(&String, &Agent)> = directory.iter().collect();
+    entries.sort_by(|a, b| {
+        let ca = StatusCategory::from_agent(a.1);
+        let cb = StatusCategory::from_agent(b.1);
+        ca.cmp(&cb).then_with(|| a.0.cmp(b.0))
+    });
+    entries.into_iter().map(|(h, _)| h.clone()).collect()
 }

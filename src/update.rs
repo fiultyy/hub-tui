@@ -8,8 +8,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::msg::AppMsg;
-use crate::model::Model;
+use crate::model::{directory_sorted_handles, Agent, OrchMessage, Model};
 use crate::shell::{FocusTarget, Shell, Tab};
+use crate::view::{directory_layout, directory_scroll, LayoutItem};
 
 // ───────────────────────── Cmd(意图声明, service 执行) ─────────────────────────
 
@@ -35,6 +36,14 @@ pub enum Cmd {
     QuerySocket { req: crate::msg::SocketReq },
     /// spawn: `orca terminal switch --terminal <handle>` 激活 tab。
     SwitchTerminal { handle: String },
+    /// 持久化 agents 到 SQLite(非 IO: service.execute 内同步写 DB)。
+    PersistAgents(Vec<Agent>),
+    /// 持久化消息到 SQLite。
+    PersistMessages(Vec<OrchMessage>),
+    /// 持久化群组加入。
+    PersistGroupJoin { name: String, handle: String },
+    /// 持久化群组离开。
+    PersistGroupLeave { name: String, handle: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -97,8 +106,9 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
         // ──── terminal list 加载完成 ────
         AppMsg::AgentsLoaded(agents) => {
+            let persist = agents.clone();
             model.apply_agents(agents);
-            vec![Cmd::WriteDirectory]
+            vec![Cmd::PersistAgents(persist), Cmd::WriteDirectory]
         }
 
         // ──── last-status.json 刷新结果 ────
@@ -119,12 +129,12 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![]
         }
 
-        // ──── inbox drain 完成(ADR-4) ────
         AppMsg::MessagesDrained(msgs) => {
+            let persist = msgs.clone();
             for msg in msgs {
                 model.push_message(msg);
             }
-            vec![]
+            vec![Cmd::PersistMessages(persist)]
         }
 
         // ──── socket 查询请求(ADR-3) ────
@@ -329,13 +339,12 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
 // ───────────────────────── 辅助 ─────────────────────────
 
 /// 当前 tab 对应的列表长度(用于 cursor 边界)。
+/// Directory tab: 按 directory_sorted_handles 排序(状态分区顺序)。
 #[must_use]
 fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String]> {
     match shell.tab {
         Tab::Directory => {
-            let mut keys: Vec<String> = model.directory.keys().cloned().collect();
-            keys.sort();
-            std::borrow::Cow::Owned(keys)
+            std::borrow::Cow::Owned(directory_sorted_handles(&model.directory))
         }
         Tab::Groups => std::borrow::Cow::Owned(
             model.groups.keys().cloned().collect::<Vec<_>>(),
@@ -347,70 +356,47 @@ fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String
 }
 
 /// 当前选中 agent 的 handle(用于发送)。
+/// Directory tab: 按 directory_sorted_handles 排序(与 cursor 索引一致)。
 fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
-    let keys: Vec<String> = match shell.tab {
-        Tab::Directory => {
-            let mut keys: Vec<String> = model.directory.keys().cloned().collect();
-            keys.sort();
-            keys
-        }
-        _ => return None,
-    };
-    keys.get(shell.cursor).cloned()
+    match shell.tab {
+        Tab::Directory => directory_sorted_handles(&model.directory)
+            .get(shell.cursor)
+            .cloned(),
+        _ => None,
+    }
 }
 
 /// 鼠标点击命中测试: (x, y) 是否落在某个 agent card 上,返回 sorted index。
-/// 复用 draw_directory 的卡片网格布局参数。
+/// 使用 view::directory_layout + directory_scroll, 与 draw_directory 完全一致。
 fn hit_test_card(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<usize> {
-    if !matches!(shell.tab, Tab::Directory) {
+    if !matches!(shell.tab, Tab::Directory) || model.directory.is_empty() {
         return None;
     }
-    let total = model.directory.len();
-    if total == 0 {
-        return None;
-    }
-
-    // 卡片网格参数(与 draw_directory 一致)
-    let card_w: u16 = 36;
-    let card_h: u16 = 4; // 3 content + 1 gap
-    let gap: u16 = 1;
 
     // 可用区域 = shell.size 减去 TabBar(1) + border(2) + input(1) + status(1)
-    let inner_x = 1u16; // border left
-    let inner_y = 2u16; // TabBar(1) + border top
-    let inner_w = shell.size.0.saturating_sub(2); // minus left/right border
-    let inner_h = shell.size.1.saturating_sub(5); // TabBar+border+input+status
+    let inner_x = 1u16;
+    let inner_y = 2u16;
+    let inner_w = shell.size.0.saturating_sub(2);
+    let inner_h = shell.size.1.saturating_sub(5);
 
-    let cols = (((inner_w + gap) / (card_w + gap)).max(1)) as usize;
-    let rows_per_col = (inner_h / card_h) as usize;
-    let visible = cols * rows_per_col;
-    let scroll = if total <= visible { 0 } else { (shell.cursor / visible) * visible };
+    let sorted = directory_sorted_handles(&model.directory);
+    let layout = directory_layout(&sorted, model, inner_x, inner_w);
+    let scroll_y = directory_scroll(shell.cursor, &layout, inner_h);
 
-    // 哪一列哪一行?
-    let rel_x = x.saturating_sub(inner_x);
-    let rel_y = y.saturating_sub(inner_y);
-    let col = (rel_x / (card_w + gap)) as usize;
-    let row = (rel_y / card_h) as usize;
-    let x_in_card = rel_x % (card_w + gap);
-
-    // 边界检查
-    if col >= cols || row >= rows_per_col {
-        return None;
+    for entry in &layout {
+        if let LayoutItem::Card { sorted_idx } = entry.item {
+            let adj_y = entry.y.saturating_sub(scroll_y) + inner_y;
+            // 点击落在卡片矩形内?
+            if x >= entry.x
+                && x < entry.x + entry.w
+                && y >= adj_y
+                && y < adj_y + entry.h
+            {
+                return Some(sorted_idx);
+            }
+        }
     }
-    if x_in_card >= card_w {
-        return None; // 落在 gap 列
-    }
-    let y_in_card = rel_y % card_h;
-    if y_in_card >= 3 {
-        return None; // 落在 gap 行
-    }
-
-    let idx = scroll + row * cols + col;
-    if idx < total {
-        Some(idx)
-    } else {
-        None
-    }
+    None
 }
 
 #[cfg(test)]

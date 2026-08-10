@@ -3,25 +3,29 @@
 //! 执行 `update::Cmd` Vec: 每 Cmd spawn std::thread, **fire-and-forget**(绝不阻塞主 loop)。
 //! 产物经 mpsc 回灌成 `AppMsg`。
 //!
-//! 策略:
-//! - `Cmd::RefreshAgents`: ADR-7 5s 间隔 + `AtomicBool` 不重叠 spawn
-//! - `Cmd::RefreshStatus`: mtime poll(非 inotify, ADR-5), 变化才 parse
-//! - `Cmd::WriteDirectory`: stub; 实际由 main.rs 在 apply 后直接写文件(ADR-6)
+//! 持久化: Service 持有 Db。启动时从 Db 加载 bootstrap 数据;
+//! 运行时由 Service::persist_* 方法在主 loop 中 update 之后调用。
 
 use parking_lot::Mutex;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::db::Db;
 use crate::msg::AppMsg;
+use crate::model::{Agent, OrchMessage};
 use crate::transport;
 
 /// 终端列表刷新间隔(ADR-7: 5s)。
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// 服务层:持有 fan-in sender + 防重叠状态。
+/// Agent activity retention (days).
+const ACTIVITY_RETENTION_DAYS: i64 = 7;
+
+/// 服务层:持有 fan-in sender + 防重叠状态 + SQLite Db。
 pub struct Service {
     tx: SyncSender<AppMsg>,
     /// 上次 fetch_terminals 的时间。
@@ -32,31 +36,109 @@ pub struct Service {
     last_status_mtime: Option<std::time::SystemTime>,
     /// 串行化 CLI spawn(防并发 orca/orchestration 进程堆积, MINOR-1)。
     cli_lock: Arc<Mutex<()>>,
+    /// SQLite persistence (None if db open failed — TUI continues without persistence)。
+    pub db: Option<Db>,
+}
+
+/// Data loaded from DB on startup for fast first paint.
+pub struct DbBootstrap {
+    /// Cached agents from last session (for display before first CLI poll).
+    pub agents: Vec<Agent>,
+    /// Persisted groups from last session.
+    pub groups: HashMap<String, HashSet<String>>,
+    /// Cached messages from last session.
+    pub messages: Vec<OrchMessage>,
 }
 
 impl Service {
-    pub fn new(tx: SyncSender<AppMsg>) -> Self {
-        // 初始预填 mtime,避免首次 tick 就重读
+    /// Create service with SQLite persistence. Returns (Service, DbBootstrap).
+    /// DbBootstrap contains cached data loaded from DB for fast startup.
+    pub fn new(tx: SyncSender<AppMsg>) -> (Self, DbBootstrap) {
         let initial_mtime = transport::last_status_mtime();
 
-        Self {
+        let db = Db::open(None);
+        let bootstrap = db.as_ref().map_or_else(
+            || DbBootstrap {
+                agents: Vec::new(),
+                groups: HashMap::new(),
+                messages: Vec::new(),
+            },
+            |db| {
+                db.prune_activity(ACTIVITY_RETENTION_DAYS);
+                DbBootstrap {
+                    agents: db.get_all_agents().into_iter().map(|r| r.into_agent()).collect(),
+                    groups: db.get_groups()
+                        .into_iter()
+                        .map(|(k, v)| (k, v.into_iter().collect()))
+                        .collect(),
+                    messages: db.get_recent_messages(500),
+                }
+            },
+        );
+
+        let svc = Self {
             tx,
             last_terminal_fetch: Instant::now() - REFRESH_INTERVAL,
             terminal_fetch_in_flight: Arc::new(AtomicBool::new(false)),
             last_status_mtime: initial_mtime,
             cli_lock: Arc::new(Mutex::new(())),
+            db,
+        };
+
+        (svc, bootstrap)
+    }
+
+    /// Persist agents to DB (call from main loop after AgentsLoaded is processed).
+    pub fn persist_agents(&self, agents: &[Agent]) {
+        let Some(ref db) = self.db else { return };
+        let now = now_iso();
+        for a in agents {
+            db.upsert_agent_activity(
+                &a.handle,
+                &a.cwd,
+                a.title.as_deref(),
+                a.connected,
+                a.state.as_deref(),
+                a.source.as_deref(),
+                &now,
+            );
+        }
+    }
+
+    /// Persist messages to DB (call from main loop after MessagesDrained is processed).
+    pub fn persist_messages(&self, msgs: &[OrchMessage]) {
+        let Some(ref db) = self.db else { return };
+        for msg in msgs {
+            db.insert_message(msg, false);
+        }
+    }
+
+    /// Persist a locally-sent message to DB.
+    pub fn persist_local_message(&self, msg: &OrchMessage) {
+        if let Some(ref db) = self.db {
+            db.insert_message(msg, true);
+        }
+    }
+
+    /// Persist group join to DB.
+    pub fn persist_group_join(&self, name: &str, handle: &str) {
+        if let Some(ref db) = self.db {
+            db.join_group(name, handle);
+        }
+    }
+
+    /// Persist group leave to DB.
+    pub fn persist_group_leave(&self, name: &str, handle: &str) {
+        if let Some(ref db) = self.db {
+            db.leave_group(name, handle);
         }
     }
 
     /// 执行 Cmd Vec(主 loop 每帧调用)。fire-and-forget: spawn 线程后即返。
-    ///
-    /// 后续 Node 会补充更多 Cmd variant(OrchestrationSend, SocketReply 等),
-    /// 此处未识别的 Cmd 静默跳过。
     pub fn execute(&mut self, cmds: Vec<crate::update::Cmd>) {
         for cmd in cmds {
             match cmd {
                 crate::update::Cmd::RefreshAgents => {
-                    // ADR-7: 5s 间隔 + 不重叠 spawn
                     if self.last_terminal_fetch.elapsed() < REFRESH_INTERVAL {
                         continue;
                     }
@@ -79,7 +161,6 @@ impl Service {
                     });
                 }
                 crate::update::Cmd::RefreshStatus => {
-                    // ADR-5: mtime poll, 变化才 parse
                     let mtime = transport::last_status_mtime();
                     if mtime == self.last_status_mtime {
                         continue;
@@ -91,18 +172,14 @@ impl Service {
                             Ok(statuses) => {
                                 let _ = tx.send(AppMsg::StatusUpdated(statuses));
                             }
-                            Err(_) => {
-                                // 静默: 文件可能在 stat 后被删除
-                            }
+                            Err(_) => {}
                         }
                     });
                 }
                 crate::update::Cmd::WriteDirectory => {
-                    // ADR-6: hub-directory.json 写出。
-                    // service 不持有 Model 快照,由 main.rs 直接写。此处 stub。
+                    // Stub: main.rs writes hub-directory.json directly.
                 }
                 crate::update::Cmd::OrchestrationSend { to, subject, body } => {
-                    // ADR-7: spawn 执行, 结果回灌 SendOk/SendFailed
                     let tx = self.tx.clone();
                     let lock = Arc::clone(&self.cli_lock);
                     thread::spawn(move || {
@@ -126,7 +203,7 @@ impl Service {
                             Ok(msgs) => {
                                 let _ = tx.send(AppMsg::MessagesDrained(msgs));
                             }
-                            Err(_) => {} // 静默: inbox 可能不存在
+                            Err(_) => {}
                         }
                     });
                 }
@@ -141,9 +218,54 @@ impl Service {
                             .status();
                     });
                 }
+                crate::update::Cmd::PersistAgents(agents) => {
+                    self.persist_agents(&agents);
+                }
+                crate::update::Cmd::PersistMessages(msgs) => {
+                    self.persist_messages(&msgs);
+                }
+                crate::update::Cmd::PersistGroupJoin { name, handle } => {
+                    self.persist_group_join(&name, &handle);
+                }
+                crate::update::Cmd::PersistGroupLeave { name, handle } => {
+                    self.persist_group_leave(&name, &handle);
+                }
                 _ => {}
             }
         }
     }
 }
 
+/// Simple ISO 8601-ish UTC timestamp (no chrono dependency).
+fn now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut d = secs;
+    let mut year = 1970u64;
+    loop {
+        let diy = if is_leap(year) { 366 } else { 365 };
+        if d < diy { break; }
+        d -= diy;
+        year += 1;
+    }
+    let md = if is_leap(year) {
+        [31,29,31,30,31,30,31,31,30,31,30,31]
+    } else {
+        [31,28,31,30,31,30,31,31,30,31,30,31]
+    };
+    let mut month = 1u64;
+    for &m in &md {
+        if d < m { break; }
+        d -= m;
+        month += 1;
+    }
+    let day = d + 1;
+    let tod = secs % 86400;
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            tod / 3600, (tod % 3600) / 60, tod % 60)
+}
+
+fn is_leap(y: u64) -> bool { (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 }
