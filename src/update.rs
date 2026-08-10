@@ -80,6 +80,10 @@ pub enum Cmd {
     PersistTagAdd { handle: String, tag: String },
     /// 移除标签。
     PersistTagRemove { handle: String, tag: String },
+    /// 持久化代码片段到 DB。
+    PersistSnippet { name: String, text: String },
+    /// 移除代码片段。
+    RemoveSnippet { name: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -350,7 +354,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -415,6 +419,15 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('D'), KeyModifiers::SHIFT) if !shell.insert_mode && shell.tab != Tab::Messages => {
             shell.dashboard_active = !shell.dashboard_active;
             if shell.dashboard_active {
+                shell.overlay_scroll = 0;
+            }
+            return vec![];
+        }
+
+        // S(Shift+s): snippet library overlay (toggle)
+        (KeyCode::Char('S'), KeyModifiers::SHIFT) if !shell.insert_mode => {
+            shell.snippet_overlay_active = !shell.snippet_overlay_active;
+            if shell.snippet_overlay_active {
                 shell.overlay_scroll = 0;
             }
             return vec![];
@@ -929,6 +942,44 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         }).collect();
     }
 
+    // snip:name text... / snip:rm:name — save/remove snippet
+    if let Some(rest) = buf.strip_prefix("snip:") {
+        if let Some(name) = rest.strip_prefix("rm:") {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                model.remove_snippet(&name);
+                shell.push_toast(format!("snippet removed: {name}"));
+                return vec![Cmd::RemoveSnippet { name }];
+            }
+            return vec![];
+        }
+        if let Some((name, text)) = rest.split_once(' ') {
+            let name = name.trim().to_string();
+            let text = text.trim().to_string();
+            if !name.is_empty() && !text.is_empty() {
+                model.add_snippet(&name, &text);
+                shell.push_toast(format!("snippet saved: {name}"));
+                return vec![Cmd::PersistSnippet { name, text }];
+            }
+        }
+        shell.push_toast("snip: usage: snip:name command_text".into());
+        return vec![];
+    }
+
+    // run:name — replay snippet (enter input mode with text pre-filled)
+    if let Some(name) = buf.strip_prefix("run:") {
+        let name = name.trim();
+        if let Some(text) = model.get_snippet(name) {
+            shell.insert_mode = true;
+            shell.focus = FocusTarget::Input;
+            shell.input_buf = text.to_string();
+            shell.push_toast(format!("replaying snippet: {name} (Enter to confirm)"));
+        } else {
+            shell.push_toast(format!("snippet not found: {name}"));
+        }
+        return vec![Cmd::Noop];
+    }
+
     vec![]
 }
 
@@ -1220,6 +1271,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.config_overlay_active = false;
             shell.orch_tasks_active = false;
             shell.activity_active = false;
+            shell.snippet_overlay_active = false;
             shell.history_overlay_active = false;
             vec![]
         }
@@ -1239,6 +1291,19 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                 shell.focus = FocusTarget::Input;
                 shell.input_buf = entry.text.clone();
                 shell.history_cursor = None;
+            }
+            shell.overlay_scroll = 0;
+            vec![]
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) if shell.snippet_overlay_active => {
+            shell.snippet_overlay_active = false;
+            let mut names: Vec<String> = model.snippets.keys().cloned().collect();
+            names.sort();
+            let idx = shell.overlay_scroll.min(names.len().saturating_sub(1));
+            if let Some(name) = names.get(idx) {
+                shell.insert_mode = true;
+                shell.focus = FocusTarget::Input;
+                shell.input_buf = format!("run:{}", name);
             }
             shell.overlay_scroll = 0;
             vec![]
@@ -1933,5 +1998,22 @@ mod tests {
         assert!(model.has_tag("term_a", "frontend"));
         model.remove_tag("term_a", "frontend");
         assert!(!model.has_tag("term_a", "frontend"));
+    }
+    #[test]
+    fn snippet_save_and_run() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        // Enter input mode and save a snippet
+        shell.insert_mode = true;
+        shell.input_buf = "snip:greet to:term_abc Hello".to_string();
+        let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
+        assert!(model.get_snippet("greet").is_some());
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistSnippet { .. })));
+        // Run the snippet
+        shell.insert_mode = true;
+        shell.input_buf = "run:greet".to_string();
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
+        assert!(shell.insert_mode);
+        assert_eq!(shell.input_buf, "to:term_abc Hello");
     }
 }

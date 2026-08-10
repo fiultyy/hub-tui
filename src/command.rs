@@ -255,6 +255,21 @@ pub fn builtin_commands() -> Vec<Command> {
             "Open dashboard overlay — live aggregate stats (D)",
             show_dashboard,
         ),
+        Command::new(
+            "save snippet",
+            "Save a named snippet (enters input mode: snip:name text)",
+            save_snippet,
+        ),
+        Command::new(
+            "run snippet",
+            "Run a saved snippet by name (enters input mode: run:name)",
+            run_snippet,
+        ),
+        Command::new(
+            "snippet library",
+            "Browse saved snippets overlay (S) — select and run",
+            show_snippet_library,
+        ),
     ]
 }
 
@@ -486,6 +501,26 @@ fn open_search(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 
 fn show_dashboard(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.dashboard_active = true;
+    shell.overlay_scroll = 0;
+    vec![]
+}
+
+fn save_snippet(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "snip:".to_string();
+    vec![]
+}
+
+fn run_snippet(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "run:".to_string();
+    vec![]
+}
+
+fn show_snippet_library(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.snippet_overlay_active = true;
     shell.overlay_scroll = 0;
     vec![]
 }

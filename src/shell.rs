@@ -105,6 +105,8 @@ pub struct Shell {
     pub history_overlay_active: bool,
     /// Dashboard 浮层激活(D 键)。
     pub dashboard_active: bool,
+    /// Snippet library 浮层激活(S 键)。
+    pub snippet_overlay_active: bool,
     /// 全局搜索浮层激活(Ctrl-S)。
     pub search_active: bool,
     /// 搜索查询输入。
@@ -135,6 +137,7 @@ impl Shell {
             palette_query: String::new(),
             palette_cursor: 0,
             filter_active: false,
+            snippet_overlay_active: false,
             filter_query: None,
             dashboard_active: false,
             overlay_content: None,

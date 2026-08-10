@@ -70,6 +70,8 @@ fn main() -> io::Result<()> {
         mdl.apply_pinned(pinned);
         let tags = svc.db.as_ref().map(|db| db.load_tags()).unwrap_or_default();
         mdl.apply_tags(tags);
+        let snippets = svc.db.as_ref().map(|db| db.load_snippets()).unwrap_or_default();
+        mdl.apply_snippets(snippets);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 

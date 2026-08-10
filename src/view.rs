@@ -117,6 +117,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.dashboard_active {
         draw_dashboard_overlay(f, model, shell, area, &theme);
     }
+    // Snippet library 浮层(S 键激活)
+    if shell.snippet_overlay_active {
+        draw_snippet_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -1009,8 +1013,8 @@ fn status_hint(shell: &Shell) -> String {
         || shell.orch_tasks_active
         || shell.history_overlay_active
         || shell.activity_active
-        || shell.search_active
         || shell.dashboard_active
+        || shell.snippet_overlay_active
     {
         return " Esc/q:close j/k:scroll c:clear ".to_string();
     }
@@ -1841,6 +1845,75 @@ fn draw_history_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect,
     let end = (start + visible_h).min(total);
     let visible: Vec<Line> = lines[start..end].to_vec();
     f.render_widget(Paragraph::new(visible), inner);
+}
+
+/// Snippet library overlay: sorted by name, shows command text preview, scrollable.
+fn draw_snippet_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+
+    let mut names: Vec<&String> = model.snippets.keys().collect();
+    names.sort();
+
+    let lines: Vec<Line> = names
+        .iter()
+        .map(|name| {
+            let text = &model.snippets[*name];
+            let text_display = if text.chars().count() > 60 {
+                let mut t: String = text.chars().take(60).collect();
+                t.push('\u{2026}');
+                t
+            } else {
+                text.clone()
+            };
+            Line::from(vec![
+                Span::styled(format!(" [{name}] "), Style::default().fg(theme.accent)),
+                Span::styled(text_display, Style::default().fg(theme.fg)),
+            ])
+        })
+        .collect();
+
+    let lines = if lines.is_empty() {
+        vec![Line::from(Span::styled(
+            " (no snippets)",
+            Style::default().fg(theme.muted),
+        ))]
+    } else {
+        lines
+    };
+
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Snippets (Enter:run Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
 }
 
 #[cfg(test)]

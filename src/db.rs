@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 5;
+const DB_VERSION: i64 = 6;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -184,7 +184,13 @@ impl Db {
                 PRIMARY KEY (handle, tag)
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '5');
+            CREATE TABLE IF NOT EXISTS snippets (
+                name       TEXT PRIMARY KEY,
+                text       TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '6');
             ",
         )
         .ok()?;
@@ -692,6 +698,50 @@ impl Db {
         map
     }
 
+
+    // ──── Snippets ────
+
+    /// 保存/覆盖代码片段(幂等)。
+    pub fn upsert_snippet(&self, name: &str, text: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let ts = crate::model::now_ms();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO snippets (name, text, created_at) VALUES (?1, ?2, ?3)",
+            params![name, text, ts],
+        );
+    }
+
+    /// 移除代码片段。
+    pub fn remove_snippet(&self, name: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute("DELETE FROM snippets WHERE name = ?1", params![name]);
+    }
+
+    /// 加载所有代码片段 → name → text。
+    pub fn load_snippets(&self) -> std::collections::HashMap<String, String> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut stmt = match conn.prepare("SELECT name, text FROM snippets") {
+            Ok(s) => s,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let _ = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| {
+                for row in rows.flatten() {
+                    map.insert(row.0, row.1);
+                }
+            });
+        map
+    }
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -738,7 +788,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("5".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("6".to_string()));
     }
 
     #[test]

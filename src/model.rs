@@ -340,6 +340,8 @@ pub struct Model {
     pub pinned: HashSet<String>,
     /// Agent 标签: handle → tag set(持久化到 DB)。
     pub tags: HashMap<String, HashSet<String>>,
+    /// 代码片段: name → command text(持久化到 DB)。
+    pub snippets: HashMap<String, String>,
 }
 
 impl Model {
@@ -356,6 +358,7 @@ impl Model {
             worktree_ps: Vec::new(),
             tags: HashMap::new(),
             orch_snapshot: None,
+            snippets: HashMap::new(),
             config: HashMap::new(),
             pinned: HashSet::new(),
         }
@@ -525,6 +528,30 @@ impl Model {
     /// agent 是否拥有指定标签。
     pub fn has_tag(&self, handle: &str, tag: &str) -> bool {
         self.tags.get(handle).map_or(false, |s| s.contains(tag))
+    }
+
+    // ──── Snippets(代码片段)────
+
+    /// 保存/覆盖代码片段。cap SNIPPETS_CAP。
+    pub fn add_snippet(&mut self, name: &str, text: &str) {
+        self.snippets.insert(name.to_string(), text.to_string());
+        self.generation += 1;
+    }
+
+    /// 移除代码片段。
+    pub fn remove_snippet(&mut self, name: &str) {
+        self.snippets.remove(name);
+        self.generation += 1;
+    }
+
+    /// 获取代码片段文本。
+    pub fn get_snippet(&self, name: &str) -> Option<&String> {
+        self.snippets.get(name)
+    }
+
+    /// 启动时从 DB 加载代码片段(替换)。
+    pub fn apply_snippets(&mut self, snippets: HashMap<String, String>) {
+        self.snippets = snippets;
     }
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
     pub fn push_history(&mut self, text: String) {
