@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 10;
+const DB_VERSION: i64 = 11;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -215,7 +215,13 @@ impl Db {
                 updated_at INTEGER NOT NULL
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '10');
+            CREATE TABLE IF NOT EXISTS aliases (
+                name       TEXT PRIMARY KEY,
+                expansion  TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '11');
             ",
         )
         .ok()?;
@@ -938,6 +944,49 @@ impl Db {
             });
         map
     }
+    // ──── Aliases ────
+
+    /// 保存/覆盖别名(幂等)。
+    pub fn upsert_alias(&self, name: &str, expansion: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let ts = crate::model::now_ms();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO aliases (name, expansion, created_at) VALUES (?1, ?2, ?3)",
+            params![name, expansion, ts],
+        );
+    }
+
+    /// 移除别名。
+    pub fn remove_alias(&self, name: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute("DELETE FROM aliases WHERE name = ?1", params![name]);
+    }
+
+    /// 加载所有别名 → name → expansion。
+    pub fn load_aliases(&self) -> std::collections::HashMap<String, String> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut stmt = match conn.prepare("SELECT name, expansion FROM aliases") {
+            Ok(s) => s,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let _ = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| {
+                for row in rows.flatten() {
+                    map.insert(row.0, row.1);
+                }
+            });
+        map
+    }
 
     // ──── Export/Import ────
 
@@ -958,6 +1007,7 @@ impl Db {
             DELETE FROM macros;
             DELETE FROM saved_views;
             DELETE FROM agent_notes;
+            DELETE FROM aliases;
             DELETE FROM config WHERE key != 'db_version';
         ");
     }
@@ -1007,7 +1057,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("10".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("11".to_string()));
     }
 
     #[test]

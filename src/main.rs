@@ -80,6 +80,8 @@ fn main() -> io::Result<()> {
         mdl.apply_saved_views(saved_views);
         let notes = svc.db.as_ref().map(|db| db.load_notes()).unwrap_or_default();
         mdl.apply_notes(notes);
+        let aliases = svc.db.as_ref().map(|db| db.load_aliases()).unwrap_or_default();
+        mdl.apply_aliases(aliases);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 

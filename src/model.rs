@@ -350,8 +350,9 @@ pub struct Model {
     pub saved_views: HashMap<String, ViewSnapshot>,
     /// Agent 笔记: handle → note text(持久化到 DB)。
     pub notes: HashMap<String, String>,
+    /// 命令别名: alias_name → expansion(持久化到 DB)。
+    pub aliases: HashMap<String, String>,
 }
-
 
 impl Model {
     pub fn new() -> Self {
@@ -374,6 +375,7 @@ impl Model {
             macros: HashMap::new(),
             config: HashMap::new(),
             pinned: HashSet::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -666,6 +668,29 @@ impl Model {
     /// 启动时从 DB 加载笔记(替换)。
     pub fn apply_notes(&mut self, notes: HashMap<String, String>) {
         self.notes = notes;
+    }
+    // ──── Aliases(命令别名)────
+
+    /// 保存/覆盖别名。
+    pub fn add_alias(&mut self, name: &str, expansion: &str) {
+        self.aliases.insert(name.to_string(), expansion.to_string());
+        self.generation += 1;
+    }
+
+    /// 移除别名。
+    pub fn remove_alias(&mut self, name: &str) {
+        self.aliases.remove(name);
+        self.generation += 1;
+    }
+
+    /// 获取别名展开。
+    pub fn get_alias(&self, name: &str) -> Option<&String> {
+        self.aliases.get(name)
+    }
+
+    /// 启动时从 DB 加载别名(替换)。
+    pub fn apply_aliases(&mut self, aliases: HashMap<String, String>) {
+        self.aliases = aliases;
     }
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
     pub fn push_history(&mut self, text: String) {
@@ -1709,4 +1734,5 @@ pub struct ExportBundle {
     pub pinned: Vec<String>,
     pub alert_rules: Vec<AlertRule>,
     pub notes: HashMap<String, String>,
+    pub aliases: HashMap<String, String>,
 }

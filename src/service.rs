@@ -364,9 +364,20 @@ impl Service {
                             for h in &bundle.pinned { db.upsert_pinned(h); }
                             for r in &bundle.alert_rules { db.upsert_alert_rule(r.rule_type.as_str(), &r.value); }
                             for (h, note) in &bundle.notes { db.upsert_note(h, note); }
+                            for (n, e) in &bundle.aliases { db.upsert_alias(n, e); }
                         }
                         let _ = tx.send(AppMsg::ImportOk { path, bundle });
                     });
+                }
+                crate::update::Cmd::PersistAlias { name, expansion } => {
+                    if let Some(db) = &self.db {
+                        db.upsert_alias(&name, &expansion);
+                    }
+                }
+                crate::update::Cmd::RemoveAlias { name } => {
+                    if let Some(db) = &self.db {
+                        db.remove_alias(&name);
+                    }
                 }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);

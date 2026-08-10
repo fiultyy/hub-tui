@@ -310,6 +310,11 @@ pub fn builtin_commands() -> Vec<Command> {
             "Browse saved view presets (V)",
             show_view_presets,
         ),
+        Command::new(
+            "add alias",
+            "Create a command alias (enters input mode: alias:name expansion)",
+            add_alias_input,
+        ),
     ]
 }
 
@@ -620,6 +625,12 @@ fn add_note_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.insert_mode = true;
     shell.focus = crate::shell::FocusTarget::Input;
     shell.input_buf = "note:".to_string();
+    vec![]
+}
+fn add_alias_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "alias:".to_string();
     vec![]
 }
 

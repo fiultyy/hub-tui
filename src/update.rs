@@ -104,6 +104,11 @@ pub enum Cmd {
     ExportSettings { path: String, bundle: crate::model::ExportBundle },
     /// 从 JSON 文件导入用户数据。
     ImportSettings { path: String },
+    /// 持久化命令别名到 DB。
+    PersistAlias { name: String, expansion: String },
+    /// 移除命令别名。
+    RemoveAlias { name: String },
+    /// 无操作。
     Noop,
     /// 退出。
     Quit,
@@ -399,10 +404,11 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             model.apply_pinned(bundle.pinned.clone());
             model.alert_rules = bundle.alert_rules.clone();
             model.apply_notes(bundle.notes.clone());
+            model.apply_aliases(bundle.aliases.clone());
             model.generation += 1;
             let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
                 + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
-                + bundle.alert_rules.len() + bundle.notes.len();
+                + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len();
             shell.push_toast(format!("✓ imported {count} items from {path}"));
             vec![]
         }
@@ -441,8 +447,8 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.filter_active {
         return handle_filter_key(model, shell, k);
     }
-    // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active {
+    // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config / alias_overlay),键盘走浮层处理
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -590,6 +596,12 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             } else {
                 shell.push_toast("no agent selected".into());
             }
+            return vec![];
+        }
+        // l: alias overlay (toggle)
+        (KeyCode::Char('l'), KeyModifiers::NONE) if !shell.insert_mode => {
+            shell.alias_overlay_active = !shell.alias_overlay_active;
+            if shell.alias_overlay_active { shell.overlay_scroll = 0; }
             return vec![];
         }
 
@@ -936,8 +948,20 @@ fn apply_view_snapshot(shell: &mut Shell, snap: ViewSnapshot) -> Vec<Cmd> {
 
 /// 解析输入栏提交: 11 个前缀分发。返回 Cmd vec(空=未匹配/验证失败)。
 
+/// Expand leading alias token in input buffer.
+/// If the first whitespace-delimited token matches an alias, replace it with the expansion.
+fn expand_alias(model: &Model, buf: String) -> String {
+    let first_word = buf.split_whitespace().next().unwrap_or(&buf);
+    if let Some(expansion) = model.get_alias(first_word) {
+        let rest = &buf[first_word.len()..];
+        return format!("{expansion}{rest}");
+    }
+    buf
+}
+
 fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd> {
-    // 解析 "to:handle subject body" 格式(编排 inbox)
+    // Alias expansion: if the first word matches an alias, expand it before prefix matching
+    let buf = expand_alias(model, buf);
     if let Some((to, rest)) = buf.strip_prefix("to:").and_then(|s| s.split_once(' ')) {
         let subject = rest.to_string();
         let body = String::new();
@@ -1381,10 +1405,11 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             pinned: model.pinned.iter().cloned().collect(),
             alert_rules: model.alert_rules.clone(),
             notes: model.notes.clone(),
+            aliases: model.aliases.clone(),
         };
         let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
             + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
-            + bundle.alert_rules.len() + bundle.notes.len();
+            + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len();
         shell.push_toast(format!("exporting {count} items to {path}…"));
         return vec![Cmd::ExportSettings { path, bundle }];
     }
@@ -1396,6 +1421,29 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         }
         shell.push_toast(format!("importing from {path}…"));
         return vec![Cmd::ImportSettings { path }];
+    }
+    // alias:<name> <expansion> / alias:rm:<name>
+    if let Some(rest) = buf.strip_prefix("alias:") {
+        if let Some(name) = rest.strip_prefix("rm:") {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                model.remove_alias(&name);
+                shell.push_toast(format!("alias removed: {name}"));
+                return vec![Cmd::RemoveAlias { name }];
+            }
+            return vec![];
+        }
+        if let Some((name, expansion)) = rest.split_once(' ') {
+            let name = name.trim().to_string();
+            let expansion = expansion.trim().to_string();
+            if !name.is_empty() && !expansion.is_empty() {
+                model.add_alias(&name, &expansion);
+                shell.push_toast(format!("alias saved: {name} → {expansion}"));
+                return vec![Cmd::PersistAlias { name, expansion }];
+            }
+        }
+        shell.push_toast("alias: usage: alias:<name> <expansion> | alias:rm:<name>".into());
+        return vec![];
     }
 
     vec![]
@@ -1761,6 +1809,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.note_edit_buf.clear();
             shell.metrics_overlay_active = false;
             shell.quick_actions_active = false;
+            shell.alias_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
