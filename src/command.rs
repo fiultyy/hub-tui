@@ -295,6 +295,16 @@ pub fn builtin_commands() -> Vec<Command> {
             "Browse saved macros overlay (e) — select to replay, d to delete",
             show_macro_library,
         ),
+        Command::new(
+            "save view",
+            "Save current view as named preset (enters input mode: view:save:name)",
+            save_view_input,
+        ),
+        Command::new(
+            "view presets",
+            "Browse saved view presets (V)",
+            show_view_presets,
+        ),
     ]
 }
 
@@ -584,6 +594,19 @@ fn run_macro_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
 
 fn show_macro_library(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.macro_overlay_active = true;
+    shell.overlay_scroll = 0;
+    vec![]
+}
+
+fn save_view_input(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "view:save:".to_string();
+    vec![]
+}
+
+fn show_view_presets(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.views_overlay_active = true;
     shell.overlay_scroll = 0;
     vec![]
 }

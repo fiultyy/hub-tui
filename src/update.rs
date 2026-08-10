@@ -8,7 +8,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::msg::AppMsg;
-use crate::model::{directory_sorted_with_mode, SortMode, Agent, OrchMessage, Model, EventCategory, EventSeverity, StatusCategory};
+use crate::model::{directory_sorted_with_mode, SortMode, Agent, OrchMessage, Model, EventCategory, EventSeverity, StatusCategory, ViewSnapshot};
 use crate::shell::{FocusTarget, Shell, Tab};
 use crate::view::{directory_layout, directory_scroll, LayoutItem};
 
@@ -92,6 +92,10 @@ pub enum Cmd {
     PersistMacro(crate::model::RecordedMacro),
     /// 移除宏。
     RemoveMacro { name: String },
+    /// 持久化视图预设到 DB。
+    PersistView { name: String, json: String },
+    /// 移除视图预设。
+    RemoveView { name: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -400,7 +404,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return handle_filter_key(model, shell, k);
     }
     // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -510,6 +514,13 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('e'), KeyModifiers::NONE) if !shell.insert_mode => {
             shell.macro_overlay_active = !shell.macro_overlay_active;
             if shell.macro_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+
+        // V: saved views overlay (toggle)
+        (KeyCode::Char('V'), KeyModifiers::SHIFT) if !shell.insert_mode => {
+            shell.views_overlay_active = !shell.views_overlay_active;
+            if shell.views_overlay_active { shell.overlay_scroll = 0; }
             return vec![];
         }
 
@@ -803,6 +814,40 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
         _ => vec![],
     }
 }
+/// Restore a ViewSnapshot onto Shell state.
+fn apply_view_snapshot(shell: &mut Shell, snap: ViewSnapshot) -> Vec<Cmd> {
+    // Restore tab
+    shell.tab = match snap.tab.as_str() {
+        "groups" => Tab::Groups,
+        "messages" => Tab::Messages,
+        _ => Tab::Directory,
+    };
+    shell.focus = match shell.tab {
+        Tab::Directory => FocusTarget::Directory,
+        Tab::Groups => FocusTarget::Groups,
+        Tab::Messages => FocusTarget::Messages,
+    };
+    shell.cursor = 0;
+
+    // Restore filter
+    match &snap.filter_query {
+        Some(q) if !q.is_empty() => {
+            shell.filter_active = true;
+            shell.filter_query = Some(q.clone());
+        }
+        _ => {
+            shell.filter_active = false;
+            shell.filter_query = None;
+        }
+    }
+
+    // Restore selection
+    shell.selected_set = snap.selected_set.into_iter().collect();
+
+    // Restore sort mode via SetConfig
+    vec![Cmd::SetConfig { key: "sort".into(), value: snap.sort_mode }]
+}
+
 /// 解析输入栏提交: 11 个前缀分发。返回 Cmd vec(空=未匹配/验证失败)。
 
 fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd> {
@@ -1166,6 +1211,50 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![];
     }
 
+    // view:save:<name> / view:load:<name> / view:rm:<name> / view:list
+    if let Some(rest) = buf.strip_prefix("view:") {
+        if let Some(name) = rest.strip_prefix("save:") {
+            let name = name.trim().to_string();
+            if name.is_empty() { return vec![]; }
+            let snapshot = ViewSnapshot {
+                tab: match shell.tab { Tab::Directory => "directory", Tab::Groups => "groups", Tab::Messages => "messages" }.into(),
+                filter_query: shell.filter_query.clone(),
+                sort_mode: model.sort_mode().label().to_string(),
+                selected_set: shell.selected_set.iter().cloned().collect(),
+                created_at_ms: crate::model::now_ms(),
+            };
+            let json = serde_json::to_string(&snapshot).unwrap_or_default();
+            model.add_saved_view(name.clone(), snapshot);
+            shell.push_toast(format!("view saved: {name}"));
+            return vec![Cmd::PersistView { name, json }];
+        }
+        if let Some(name) = rest.strip_prefix("load:") {
+            let name = name.trim().to_string();
+            if let Some(snapshot) = model.get_saved_view(&name).cloned() {
+                shell.push_toast(format!("view loaded: {name}"));
+                return apply_view_snapshot(shell, snapshot);
+            } else {
+                shell.push_toast(format!("view not found: {name}"));
+                return vec![];
+            }
+        }
+        if let Some(name) = rest.strip_prefix("rm:") {
+            let name = name.trim().to_string();
+            if !name.is_empty() && model.remove_saved_view(&name) {
+                shell.push_toast(format!("view removed: {name}"));
+                return vec![Cmd::RemoveView { name }];
+            }
+            return vec![];
+        }
+        if rest.trim() == "list" {
+            shell.views_overlay_active = !shell.views_overlay_active;
+            if shell.views_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+        shell.push_toast("view: usage: view:save:name | view:load:name | view:rm:name | view:list".into());
+        return vec![];
+    }
+
     vec![]
 }
 
@@ -1458,8 +1547,8 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.orch_tasks_active = false;
             shell.activity_active = false;
             shell.snippet_overlay_active = false;
-            shell.history_overlay_active = false;
             shell.macro_overlay_active = false;
+            shell.views_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
@@ -1536,6 +1625,35 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                 shell.push_toast(format!("macro removed: {name}"));
                 shell.overlay_scroll = 0;
                 return vec![Cmd::RemoveMacro { name }];
+            }
+            vec![]
+        }
+        // ── Views overlay: Enter loads view ──
+        (KeyCode::Enter, KeyModifiers::NONE) if shell.views_overlay_active => {
+            shell.views_overlay_active = false;
+            let mut names: Vec<String> = model.saved_views.keys().cloned().collect();
+            names.sort();
+            let idx = shell.overlay_scroll.min(names.len().saturating_sub(1));
+            if let Some(name) = names.get(idx).cloned() {
+                if let Some(snapshot) = model.get_saved_view(&name).cloned() {
+                    shell.push_toast(format!("view loaded: {name}"));
+                    shell.overlay_scroll = 0;
+                    return apply_view_snapshot(shell, snapshot);
+                }
+            }
+            shell.overlay_scroll = 0;
+            vec![]
+        }
+        // ── Views overlay: d deletes view ──
+        (KeyCode::Char('d'), KeyModifiers::NONE) if shell.views_overlay_active => {
+            let mut names: Vec<String> = model.saved_views.keys().cloned().collect();
+            names.sort();
+            let idx = shell.overlay_scroll.min(names.len().saturating_sub(1));
+            if let Some(name) = names.get(idx).cloned() {
+                model.remove_saved_view(&name);
+                shell.push_toast(format!("view removed: {name}"));
+                shell.overlay_scroll = 0;
+                return vec![Cmd::RemoveView { name }];
             }
             vec![]
         }

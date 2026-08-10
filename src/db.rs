@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 8;
+const DB_VERSION: i64 = 9;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -203,7 +203,13 @@ impl Db {
                 created_at INTEGER NOT NULL
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '8');
+            CREATE TABLE IF NOT EXISTS saved_views (
+                name       TEXT PRIMARY KEY,
+                view_state TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '9');
             ",
         )
         .ok()?;
@@ -835,6 +841,54 @@ impl Db {
         });
         rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
     }
+    // ──── Saved Views ────
+
+    /// 保存/覆盖视图预设(幂等)。
+    pub fn upsert_saved_view(&self, name: &str, view_state_json: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let ts = crate::model::now_ms();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO saved_views (name, view_state, created_at) VALUES (?1, ?2, ?3)",
+            params![name, view_state_json, ts],
+        );
+    }
+
+    /// 移除视图预设。
+    pub fn remove_saved_view(&self, name: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute("DELETE FROM saved_views WHERE name = ?1", params![name]);
+    }
+
+    /// 加载所有视图预设 → (name, ViewSnapshot)。
+    pub fn load_saved_views(&self) -> Vec<(String, crate::model::ViewSnapshot)> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        let mut stmt = match conn.prepare("SELECT name, view_state FROM saved_views ORDER BY created_at") {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        let rows = stmt.query_map([], |r| {
+            let name: String = r.get(0)?;
+            let json: String = r.get(1)?;
+            let snapshot: crate::model::ViewSnapshot = serde_json::from_str(&json).unwrap_or(crate::model::ViewSnapshot {
+                tab: "directory".into(),
+                filter_query: None,
+                sort_mode: "by-worktree".into(),
+                selected_set: vec![],
+                created_at_ms: 0,
+            });
+            Ok((name, snapshot))
+        });
+        rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
+    }
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -881,7 +935,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("8".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("9".to_string()));
     }
 
     #[test]

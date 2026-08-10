@@ -129,6 +129,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.macro_overlay_active {
         draw_macro_overlay(f, model, shell, area, &theme);
     }
+    // Saved Views 浮层
+    if shell.views_overlay_active {
+        draw_views_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -2030,6 +2034,80 @@ fn draw_macro_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, t
     f.render_widget(Clear, overlay_area);
 
     let title = " Macros (Enter:run d:delete Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+// ───────────────────────── Saved Views 浮层 ─────────────────────────
+
+/// Saved Views overlay: sorted alphabetically, shows tab/sort/filter preview, scrollable.
+fn draw_views_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Borders, Clear};
+
+    let mut names: Vec<&String> = model.saved_views.keys().collect();
+    names.sort();
+
+    let lines: Vec<Line> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let snap = &model.saved_views[*name];
+            let query = snap.filter_query.as_deref().unwrap_or("-");
+            let name_style = if i == shell.overlay_scroll {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.fg)
+            };
+            Line::from(vec![
+                Span::styled(format!("  {name}  "), name_style),
+                Span::styled(
+                    format!("[{}] sort:{} filter:{}", snap.tab, snap.sort_mode, query),
+                    Style::default().fg(theme.muted),
+                ),
+            ])
+        })
+        .collect();
+
+    let lines = if lines.is_empty() {
+        vec![Line::from(Span::styled(
+            " No saved views yet. Use 'view:save:name' to create one.",
+            Style::default().fg(theme.muted),
+        ))]
+    } else {
+        lines
+    };
+
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(40);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Saved Views (Enter:load d:delete Esc:close) ";
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))

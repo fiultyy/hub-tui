@@ -346,6 +346,8 @@ pub struct Model {
     pub alert_rules: Vec<AlertRule>,
     /// 录制的宏: name → RecordedMacro(持久化到 DB)。
     pub macros: HashMap<String, RecordedMacro>,
+    /// 视图预设: name → ViewSnapshot(持久化到 DB)。
+    pub saved_views: HashMap<String, ViewSnapshot>,
 }
 
 impl Model {
@@ -367,6 +369,7 @@ impl Model {
             config: HashMap::new(),
             macros: HashMap::new(),
             pinned: HashSet::new(),
+            saved_views: HashMap::new(),
         }
     }
 
@@ -607,6 +610,35 @@ impl Model {
     /// 启动时从 DB 加载宏(替换)。
     pub fn apply_macros(&mut self, macros: Vec<RecordedMacro>) {
         self.macros = macros.into_iter().map(|m| (m.name.clone(), m)).collect();
+    }
+    // ──── Saved Views(视图预设)────
+
+    /// 保存/覆盖视图预设(cap SAVED_VIEWS_CAP, FIFO 溢出)。
+    pub fn add_saved_view(&mut self, name: String, snapshot: ViewSnapshot) {
+        if self.saved_views.len() >= SAVED_VIEWS_CAP && !self.saved_views.contains_key(&name) {
+            if let Some(oldest) = self.saved_views.keys().next().cloned() {
+                self.saved_views.remove(&oldest);
+            }
+        }
+        self.saved_views.insert(name, snapshot);
+        self.generation += 1;
+    }
+
+    /// 移除视图预设, 返回是否存在。
+    pub fn remove_saved_view(&mut self, name: &str) -> bool {
+        let existed = self.saved_views.remove(name).is_some();
+        if existed { self.generation += 1; }
+        existed
+    }
+
+    /// 获取视图预设。
+    pub fn get_saved_view(&self, name: &str) -> Option<&ViewSnapshot> {
+        self.saved_views.get(name)
+    }
+
+    /// 启动时从 DB 加载视图预设(替换)。
+    pub fn apply_saved_views(&mut self, views: Vec<(String, ViewSnapshot)>) {
+        self.saved_views = views.into_iter().collect();
     }
     /// 追加输入历史, cap HISTORY_CAP。前缀从 text 自动提取(首个 ':')。
     pub fn push_history(&mut self, text: String) {
@@ -1446,4 +1478,25 @@ pub fn count_key_events(json: &str) -> usize {
     serde_json::from_str::<Vec<SerializableKeyEvent>>(json)
         .map(|v| v.len())
         .unwrap_or(0)
+}
+
+// ───────────────────────── Saved Views(视图预设) ─────────────────────────
+
+/// Saved View 上限。
+pub const SAVED_VIEWS_CAP: usize = 50;
+
+/// 可序列化的视图状态快照(存储为 JSON)。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ViewSnapshot {
+    /// 活跃 tab: "directory" | "groups" | "messages"。
+    pub tab: String,
+    /// 过滤查询(可能含 tag:xxx 前缀)。
+    pub filter_query: Option<String>,
+    /// 排序模式: "by-worktree" | "by-state" | "by-source" | "by-name"。
+    pub sort_mode: String,
+    /// 多选 handle 集合(恢复 cursor 上下文)。
+    #[serde(default)]
+    pub selected_set: Vec<String>,
+    /// 创建时间(epoch ms)。
+    pub created_at_ms: i64,
 }

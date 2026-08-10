@@ -119,6 +119,8 @@ pub struct Shell {
     pub recording_name: String,
     /// 宏回放队列(非空时每 tick 回放一个键)。
     pub replay_queue: Vec<crossterm::event::KeyEvent>,
+    /// Saved Views 浮层激活(V 键)。
+    pub views_overlay_active: bool,
     /// 全局搜索浮层激活(Ctrl-S)。
     pub search_active: bool,
     /// 搜索查询输入。
@@ -172,6 +174,7 @@ impl Shell {
             recording_buffer: Vec::new(),
             recording_name: String::new(),
             replay_queue: Vec::new(),
+            views_overlay_active: false,
             selected_set: std::collections::HashSet::new(),
             theme_name: "default".to_string(),
             generation: 0,

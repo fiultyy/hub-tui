@@ -303,6 +303,16 @@ impl Service {
                         db.remove_macro(&name);
                     }
                 }
+                crate::update::Cmd::PersistView { name, json } => {
+                    if let Some(db) = &self.db {
+                        db.upsert_saved_view(&name, &json);
+                    }
+                }
+                crate::update::Cmd::RemoveView { name } => {
+                    if let Some(db) = &self.db {
+                        db.remove_saved_view(&name);
+                    }
+                }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);
                 }
