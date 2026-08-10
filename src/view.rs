@@ -90,6 +90,11 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.cheatsheet_active {
         draw_cheatsheet(f, shell, area, &theme);
     }
+
+    // config overlay (show config 命令激活)
+    if shell.config_overlay_active {
+        draw_config_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -906,6 +911,7 @@ fn status_hint(shell: &Shell) -> String {
         || shell.overlay_content.is_some()
         || shell.worktree_ps_active
         || shell.group_detail_active
+        || shell.config_overlay_active
     {
         return " Esc/q:close j/k:scroll ".to_string();
     }
@@ -1200,6 +1206,7 @@ fn draw_cheatsheet(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
         ("leave:name        ", "Leave group"),
         ("broadcast:g msg   ", "Broadcast to group"),
         ("create:cmd        ", "Create terminal in worktree"),
+        ("config:k=v        ", "Set configuration (refresh/theme/filter)"),
     ];
     for (key, desc) in prefixes {
         lines.push(Line::from(vec![
@@ -1246,6 +1253,112 @@ fn draw_cheatsheet(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     let start = shell.overlay_scroll.min(lines.len().saturating_sub(visible_h));
     let visible: Vec<Line> = lines[start..start.min(lines.len()).min(start + visible_h)].to_vec();
     f.render_widget(ratatui::widgets::Paragraph::new(visible), inner);
+}
+
+// ───────────────────────── config overlay ─────────────────────────
+
+/// config overlay: 显示所有已知配置项 + 当前值。
+/// 已知配置项: refresh_interval_ms, theme, default_filter。
+/// 未在 model.config 中的项显示默认值。
+fn draw_config_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Paragraph, Clear};
+    use ratatui::style::Modifier;
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled(" CONFIGURATION", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(""));
+
+    // 已知配置项(带描述和默认值)
+    let known: &[(&str, &str, &str)] = &[
+        ("refresh_interval_ms", "Agent refresh interval (ms)", "5000"),
+        ("theme", "UI color theme (dark/default)", "default"),
+        ("default_filter", "Default directory filter query", ""),
+    ];
+
+    for (key, desc, default) in known {
+        let value = model.config.get(*key).map(|s| s.as_str()).unwrap_or(*default);
+        let is_custom = model.config.contains_key(*key);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", key), Style::default().fg(theme.accent)),
+            Span::styled(
+                format!("= {} ", value),
+                if is_custom {
+                    Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.muted)
+                },
+            ),
+            Span::styled(format!("({})", if is_custom { "custom" } else { "default" }), Style::default().fg(theme.muted)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(format!("    {}", desc), Style::default().fg(theme.muted)),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // 显示未知配置项(用户自定义的)
+    let known_keys: std::collections::HashSet<&str> = known.iter().map(|(k, _, _)| *k).collect();
+    let custom_keys: Vec<&str> = model.config.keys().filter(|k| !known_keys.contains(k.as_str())).map(|s| s.as_str()).collect();
+    if !custom_keys.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(" CUSTOM", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(""));
+        for key in custom_keys {
+            if let Some(value) = model.config.get(key) {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {} ", key), Style::default().fg(theme.accent)),
+                    Span::styled(format!("= {}", value), Style::default().fg(theme.fg)),
+                ]));
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  config:key=value", Style::default().fg(theme.accent)),
+        Span::styled(" to change (e.g. config:refresh_interval_ms=3000)", Style::default().fg(theme.muted)),
+    ]));
+
+    // Layout: centered overlay
+    let content_w: usize = lines.iter().map(|l| l.width()).max().unwrap_or(40);
+    let max_w = area.width.saturating_sub(4) as usize;
+    let display_w = content_w.min(max_w).max(40);
+    let overlay_w = (display_w + 4) as u16;
+    let max_h = area.height.saturating_sub(4);
+    let content_h = lines.len() as u16;
+    let overlay_h = content_h.min(max_h).max(8);
+    let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let overlay_y = area.y + 2;
+
+    let bg_rect = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+    f.render_widget(Clear, bg_rect);
+
+    let border = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " Config (Esc/q: close) ",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = border.inner(bg_rect);
+    f.render_widget(border, bg_rect);
+
+    let visible_h = inner.height as usize;
+    if visible_h == 0 {
+        return;
+    }
+    let start = shell.overlay_scroll.min(lines.len().saturating_sub(visible_h));
+    let visible: Vec<Line> = lines[start..start.min(lines.len()).min(start + visible_h)].to_vec();
+    f.render_widget(Paragraph::new(visible), inner);
 }
 
 #[cfg(test)]

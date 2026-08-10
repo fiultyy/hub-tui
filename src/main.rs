@@ -61,6 +61,7 @@ fn main() -> io::Result<()> {
         for msg in bootstrap.messages {
             mdl.push_message(msg);
         }
+        mdl.apply_config(bootstrap.config);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 

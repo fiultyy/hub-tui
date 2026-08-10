@@ -60,26 +60,22 @@ pub enum Cmd {
     GroupBroadcast { name: String, message: String, handles: Vec<String> },
     /// spawn: 创建新终端(orca terminal create)。
     CreateTerminal { worktree: Option<String>, command: String, title: Option<String> },
+    /// 持久化配置项到 DB(同步写, 结果回灌 ConfigUpdated)。
+    SetConfig { key: String, value: String },
     /// 无操作。
     Noop,
     /// 退出。
     Quit,
 }
 
-/// 周期性刷新间隔(tick 数)。tick=50ms → 5 tick=250ms 用于 agents 刷新(ADR-5: 5s)。
-/// 精确 5s = 100 tick, 但这里用较小值让首屏更快加载。
-const REFRESH_AGENTS_INTERVAL: usize = 100; // 50ms * 100 = 5s
 
-/// Tick 计数器(追踪周期性任务)。
-/// 存在 Shell 上不合适(数据态), 这里用 thread-local-free 方案:
-/// update 每次收到 Tick 时判断 model.generation 变化次数。
-/// 简化: 用 shell.spinner_frame 翻转频率间接计时。
-/// 更简洁: 在 update 内维护 tick_count, 传入 model/shell 改太侵入。
-/// 最终: 每次 Tick 都返回 RefreshStatus(轻量 stat), RefreshAgents 用固定间隔。
-fn should_refresh_agents(shell: &Shell) -> bool {
-    // spinner_frame 在每次 Tick +1, 约 50ms/帧。
-    // 100 frames ≈ 5s
-    shell.spinner_frame % REFRESH_AGENTS_INTERVAL == 0
+/// 判断是否该刷新 agents。
+/// 从 model.config 读取 refresh_interval_ms,转换为 tick 数(tick=50ms)。
+fn should_refresh_agents(model: &Model, shell: &Shell) -> bool {
+    let interval_ms = model.refresh_interval_ms();
+    // 转换为 tick 数: tick=50ms → ticks = interval_ms / 50
+    let ticks = (interval_ms / 50).max(2) as usize; // 最少 100ms
+    shell.spinner_frame % ticks == 0
 }
 
 // ───────────────────────── update(纯 reducer) ─────────────────────────
@@ -112,8 +108,8 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             let mut cmds = Vec::new();
             // 每次 tick 都刷新 status(轻量 stat)
             cmds.push(Cmd::RefreshStatus);
-            // 周期性刷新 agents(5s)
-            if should_refresh_agents(shell) {
+            // 周期性刷新 agents(可配置间隔)
+            if should_refresh_agents(model, shell) {
                 cmds.push(Cmd::RefreshAgents);
                 cmds.push(Cmd::DrainMessages);
                 cmds.push(Cmd::RefreshUnread);
@@ -212,6 +208,13 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![]
         }
 
+        // ──── 配置更新回灌 ────
+        AppMsg::ConfigUpdated { key, value } => {
+            model.set_config(key.clone(), value);
+            shell.push_toast(format!("config: {key} updated"));
+            vec![]
+        }
+
         // ──── 退出 ────
         AppMsg::Quit => vec![Cmd::Quit],
     }
@@ -229,8 +232,8 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.filter_active {
         return handle_filter_key(model, shell, k);
     }
-    // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet),键盘走浮层处理
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active {
+    // 浮层激活时(overlay_content / worktree_ps / group_detail / cheatsheet / config),键盘走浮层处理
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
 
@@ -561,6 +564,36 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
                 }];
             }
 
+            // 解析 "config:key=value" 格式(设置配置项)
+            if let Some(rest) = buf.strip_prefix("config:") {
+                if let Some((key, value)) = rest.split_once('=') {
+                    let key = key.trim().to_string();
+                    let value = value.trim().to_string();
+                    if key.is_empty() {
+                        _shell.push_toast("config: key cannot be empty".into());
+                        return vec![];
+                    }
+                    // 验证已知 key
+                    match key.as_str() {
+                        "refresh_interval_ms" => {
+                            if value.parse::<u64>().is_err() {
+                                _shell.push_toast("config: refresh_interval_ms must be a number".into());
+                                return vec![];
+                            }
+                        }
+                        "theme" | "default_filter" => {}
+                        _ => {
+                            _shell.push_toast(format!("config: unknown key '{key}'"));
+                            return vec![];
+                        }
+                    }
+                    return vec![Cmd::SetConfig { key, value }];
+                }
+                // 无 = → 无效
+                _shell.push_toast("config: use format config:key=value".into());
+                return vec![];
+            }
+
             vec![]
         }
 
@@ -682,6 +715,7 @@ fn handle_overlay_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec
             shell.worktree_ps_active = false;
             shell.group_detail_active = false;
             shell.cheatsheet_active = false;
+            shell.config_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {

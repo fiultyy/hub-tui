@@ -437,6 +437,24 @@ impl Db {
         .ok()
     }
 
+    /// Load all config key-value pairs.
+    pub fn get_all_config(&self) -> HashMap<String, String> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return HashMap::new(),
+        };
+        let mut stmt = match conn.prepare("SELECT key, value FROM config") {
+            Ok(s) => s,
+            Err(_) => return HashMap::new(),
+        };
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .ok()
+        .map(|r| r.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default()
+    }
+
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).

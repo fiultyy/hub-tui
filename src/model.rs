@@ -208,6 +208,8 @@ pub struct Model {
     pub unread_counts: HashMap<String, usize>,
     /// worktree ps 编排摘要(按需刷新)。
     pub worktree_ps: Vec<WorktreePsEntry>,
+    /// 配置 key-value store(启动从 DB 加载,运行时变更持久化)。
+    pub config: HashMap<String, String>,
 }
 
 impl Model {
@@ -220,6 +222,7 @@ impl Model {
             pending_status: HashMap::new(),
             unread_counts: HashMap::new(),
             worktree_ps: Vec::new(),
+            config: HashMap::new(),
         }
     }
 
@@ -320,6 +323,37 @@ impl Model {
     pub fn apply_worktree_ps(&mut self, entries: Vec<WorktreePsEntry>) {
         self.worktree_ps = entries;
         self.generation += 1;
+    }
+    /// 加载/覆盖配置(启动时从 DB 加载)。
+    pub fn apply_config(&mut self, config: HashMap<String, String>) {
+        self.config = config;
+    }
+
+    /// 更新单个配置项(key-value)。
+    pub fn set_config(&mut self, key: String, value: String) {
+        self.config.insert(key, value);
+    }
+
+    /// 获取配置值,带默认。
+    pub fn get_config(&self, key: &str, default: &str) -> String {
+        self.config.get(key).cloned().unwrap_or_else(|| default.to_string())
+    }
+
+    /// 获取 refresh_interval_ms(默认 5000)。
+    pub fn refresh_interval_ms(&self) -> u64 {
+        self.get_config("refresh_interval_ms", "5000")
+            .parse()
+            .unwrap_or(5000)
+    }
+
+    /// 获取 theme(默认 "default")。
+    pub fn get_theme(&self) -> &str {
+        self.config.get("theme").map(|s| s.as_str()).unwrap_or("default")
+    }
+
+    /// 获取 default_filter(默认空)。
+    pub fn get_default_filter(&self) -> &str {
+        self.config.get("default_filter").map(|s| s.as_str()).unwrap_or("")
     }
 }
 

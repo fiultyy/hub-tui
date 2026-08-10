@@ -77,6 +77,8 @@ pub enum AppMsg {
     WorktreePsLoaded(Vec<crate::model::WorktreePsEntry>),
     /// terminal create 成功: 返回新终端 handle + title(用于 toast + RefreshAgents)。
     TerminalCreated { handle: String, title: Option<String> },
+    /// 配置项更新成功(key, value)。
+    ConfigUpdated { key: String, value: String },
     /// 通用错误。
     Error(String),
 }

@@ -156,6 +156,16 @@ pub fn builtin_commands() -> Vec<Command> {
             broadcast_to_group,
         ),
         Command::new(
+            "show config",
+            "Display all configuration items and current values",
+            show_config,
+        ),
+        Command::new(
+            "set config",
+            "Set a configuration value (enters input mode: config:key=value)",
+            set_config,
+        ),
+        Command::new(
             "quit",
             "Exit hub-tui",
             quit,
@@ -351,6 +361,19 @@ fn broadcast_to_group(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     }
     vec![]
 }
+
+fn show_config(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.config_overlay_active = true;
+    vec![]
+}
+
+fn set_config(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "config:".to_string();
+    vec![]
+}
+
 
 // ───────────────────────── 过滤 + 匹配 ─────────────────────────
 

@@ -48,6 +48,8 @@ pub struct DbBootstrap {
     pub groups: HashMap<String, HashSet<String>>,
     /// Cached messages from last session.
     pub messages: Vec<OrchMessage>,
+    /// 配置 key-value pairs.
+    pub config: HashMap<String, String>,
 }
 
 impl Service {
@@ -62,6 +64,7 @@ impl Service {
                 agents: Vec::new(),
                 groups: HashMap::new(),
                 messages: Vec::new(),
+                config: HashMap::new(),
             },
             |db| {
                 db.prune_activity(ACTIVITY_RETENTION_DAYS);
@@ -72,7 +75,8 @@ impl Service {
                         .map(|(k, v)| (k, v.into_iter().collect()))
                         .collect(),
                     messages: db.get_recent_messages(500),
-                }
+                    config: db.get_all_config(),
+                 }
             },
         );
 
@@ -325,6 +329,13 @@ impl Service {
                         ));
                     });
                 }
+                crate::update::Cmd::SetConfig { key, value } => {
+                    // 同步写 DB,然后回灌到 model
+                    if let Some(db) = &self.db {
+                        db.set_config(&key, &value);
+                    }
+                    let _ = self.tx.send(AppMsg::ConfigUpdated { key, value });
+                 }
                 _ => {}
             }
         }

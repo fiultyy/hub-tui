@@ -90,6 +90,8 @@ pub struct Shell {
     /// cheatsheet 浮层激活(? 键)。
     pub cheatsheet_active: bool,
     pub worktree_ps_active: bool,
+    /// config overlay 激活(show config 浮层)。
+    pub config_overlay_active: bool,
     /// generation guard(范式 3: 防陈旧回调)。
     generation: u64,
 }
@@ -116,6 +118,7 @@ impl Shell {
             group_detail_active: false,
             cheatsheet_active: false,
             worktree_ps_active: false,
+            config_overlay_active: false,
             generation: 0,
         }
     }
