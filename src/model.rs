@@ -506,3 +506,45 @@ pub fn directory_filter_handles(
         .cloned()
         .collect()
 }
+
+/// 从消息列表中过滤出匹配 query 的消息(按 id 列表返回,用于 cursor 导航)。
+/// 支持命名空间前缀: from:handle / subject:text / type:status
+/// 无前缀 = 跨维度模糊匹配(from/subject/body/type)。
+pub fn messages_filter_ids(
+    messages: &std::collections::VecDeque<OrchMessage>,
+    query: &str,
+) -> Vec<String> {
+    if query.is_empty() {
+        return messages.iter().map(|m| m.id.clone()).collect();
+    }
+    let query = query.trim();
+    let (field, value) = if let Some((f, v)) = query.split_once(':') {
+        (Some(f), v)
+    } else {
+        (None, query)
+    };
+    let value_lower = value.to_ascii_lowercase();
+
+    messages
+        .iter()
+        .filter(|m| {
+            let target = match field {
+                Some("from") => m.from_handle.as_str(),
+                Some("subject") => m.subject.as_str(),
+                Some("type") => m.msg_type.as_str(),
+                Some("body") => m.body.as_str(),
+                Some("thread") => m.thread_id.as_deref().unwrap_or(""),
+                _ => {
+                    // 无前缀: 跨维度模糊匹配
+                    let combined = format!(
+                        "{} {} {} {}",
+                        m.from_handle, m.subject, m.body, m.msg_type
+                    );
+                    return crate::command::fuzzy_match(value, &combined);
+                }
+            };
+            target.to_ascii_lowercase().contains(&value_lower)
+        })
+        .map(|m| m.id.clone())
+        .collect()
+}

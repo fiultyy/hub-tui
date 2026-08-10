@@ -176,6 +176,36 @@ pub fn builtin_commands() -> Vec<Command> {
             show_tasks,
         ),
         Command::new(
+            "batch send",
+            "Send a message to all selected agents (Space to multi-select first)",
+            batch_send,
+        ),
+        Command::new(
+            "batch close",
+            "Close all selected agent terminals",
+            batch_close,
+        ),
+        Command::new(
+            "clear selection",
+            "Clear multi-selection",
+            clear_selection,
+        ),
+        Command::new(
+            "theme mocha",
+            "Switch to Mocha (dark) theme",
+            theme_mocha,
+        ),
+        Command::new(
+            "theme light",
+            "Switch to light theme",
+            theme_light,
+        ),
+        Command::new(
+            "theme contrast",
+            "Switch to high-contrast theme",
+            theme_contrast,
+        ),
+        Command::new(
             "quit",
             "Exit hub-tui",
             quit,
@@ -272,6 +302,52 @@ fn show_tasks(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.orch_tasks_active = true;
     shell.overlay_scroll = 0;
     vec![Cmd::RefreshOrchTasks]
+}
+
+fn batch_send(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    if shell.selected_set.is_empty() {
+        shell.push_toast("No agents selected (Space to select)".into());
+        return vec![];
+    }
+    let handles: Vec<String> = shell.selected_set.iter().cloned().collect();
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = format!("batch:{} ", handles.join(","));
+    vec![]
+}
+
+fn batch_close(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    if shell.selected_set.is_empty() {
+        shell.push_toast("No agents selected".into());
+        return vec![];
+    }
+    let handles: Vec<String> = shell.selected_set.iter().cloned().collect();
+    let count = handles.len();
+    shell.push_toast(format!("Closing {count} terminals..."));
+    shell.selected_set.clear();
+    handles.into_iter().map(|h| Cmd::CloseTerminal { handle: h }).collect()
+}
+
+fn clear_selection(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    let count = shell.selected_set.len();
+    shell.selected_set.clear();
+    shell.push_toast(format!("Cleared {count} selections"));
+    vec![]
+}
+
+fn theme_mocha(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.theme_name = "mocha".to_string();
+    vec![Cmd::SetConfig { key: "theme".to_string(), value: "mocha".to_string() }]
+}
+
+fn theme_light(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.theme_name = "light".to_string();
+    vec![Cmd::SetConfig { key: "theme".to_string(), value: "light".to_string() }]
+}
+
+fn theme_contrast(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.theme_name = "contrast".to_string();
+    vec![Cmd::SetConfig { key: "theme".to_string(), value: "contrast".to_string() }]
 }
 
 fn inject_pty(model: &Model, shell: &mut Shell) -> Vec<Cmd> {

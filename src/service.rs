@@ -347,6 +347,17 @@ impl Service {
                         }
                     });
                 }
+                crate::update::Cmd::MarkRead { delivery_id } => {
+                    let tx = self.tx.clone();
+                    let lock = Arc::clone(&self.cli_lock);
+                    thread::spawn(move || {
+                        let _guard = lock.lock();
+                        match transport::orchestration_ack(&delivery_id) {
+                            Ok(()) => { let _ = tx.send(AppMsg::AckOk(delivery_id)); }
+                            Err(e) => { let _ = tx.send(AppMsg::AckFailed(e)); }
+                        }
+                    });
+                }
                 crate::update::Cmd::RefreshOrchTasks => {
                     let tx = self.tx.clone();
                     thread::spawn(move || {

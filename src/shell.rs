@@ -95,6 +95,10 @@ pub struct Shell {
     pub worktree_ps_active: bool,
     /// config overlay 激活(show config 浮层)。
     pub config_overlay_active: bool,
+    /// 多选的 handle 集合(Space 键 toggle)。
+    pub selected_set: std::collections::HashSet<String>,
+    /// 当前主题名(从 config 加载,draw() 每帧读取)。
+    pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
     generation: u64,
 }
@@ -123,6 +127,8 @@ impl Shell {
             orch_tasks_active: false,
             worktree_ps_active: false,
             config_overlay_active: false,
+            selected_set: std::collections::HashSet::new(),
+            theme_name: "default".to_string(),
             generation: 0,
         }
     }

@@ -150,7 +150,7 @@ struct CheckResult {
 /// 跑 `orca orchestration send --to <to> --type status --subject <subject> --body <body>`。
 /// 解析 stdout: 含 `message_id`/`id` → Ok(id), 含 `error` 或解析失败 → Err(stderr)。
 pub fn orchestration_send(to: &str, subject: &str, body: &str) -> Result<String, String> {
-    let out = std::process::Command::new("orca")
+    let out = std::process::Command::new("orca-ide")
         .args([
             "orchestration",
             "send",
@@ -199,7 +199,7 @@ pub fn orchestration_send(to: &str, subject: &str, body: &str) -> Result<String,
 ///
 /// 跑 `orca orchestration check --json`, 解析 messages 数组。
 pub fn orchestration_check() -> Result<Vec<crate::model::OrchMessage>, String> {
-    let out = std::process::Command::new("orca")
+    let out = std::process::Command::new("orca-ide")
         .args(["orchestration", "check", "--json"])
         .output()
         .map_err(|e| format!("failed to spawn orca: {e}"))?;
@@ -494,6 +494,20 @@ pub fn fetch_gate_list() -> Result<Vec<crate::model::OrchGateEntry>, String> {
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect::<Vec<_>>()
         .pipe(Ok)
+}
+/// ADR-4: acknowledge/mark-read 单条消息(orchestration check --ack)。
+///
+/// 跑 `orca orchestration check --ack <delivery_id> --json`，标记该消息已读。
+pub fn orchestration_ack(delivery_id: &str) -> Result<(), String> {
+    let output = Command::new("orca-ide")
+        .args(["orchestration", "check", "--ack", delivery_id, "--json"])
+        .output()
+        .map_err(|e| format!("failed to spawn orca: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(stderr.trim().to_string());
+    }
+    Ok(())
 }
 
 /// 泛用 list 结果壳(兼容 tasks/runs/gates/items 字段名)。

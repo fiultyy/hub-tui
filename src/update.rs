@@ -64,6 +64,8 @@ pub enum Cmd {
     SetConfig { key: String, value: String },
     /// spawn: orchestration reply --id <msg_id> --body <text>。
     OrchestrationReply { id: String, body: String },
+    /// spawn: orchestration check --ack <delivery_id> 标记消息已读。
+    MarkRead { delivery_id: String },
     /// spawn: 并行刷新 run-list + task-list + gate-list 编排快照。
     RefreshOrchTasks,
     /// 无操作。
@@ -152,6 +154,19 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![]
         }
 
+        // ──── mark-read 成功(ADR-7 回灌) ────
+        AppMsg::AckOk(id) => {
+            shell.push_toast(format!("Marked read: {id}"));
+            // 刷新未读数
+            vec![Cmd::RefreshUnread]
+        }
+
+        // ──── mark-read 失败 ────
+        AppMsg::AckFailed(e) => {
+            shell.push_toast(format!("Ack failed: {e}"));
+            vec![]
+        }
+
         AppMsg::MessagesDrained(msgs) => {
             let persist = msgs.clone();
             for msg in msgs {
@@ -214,7 +229,10 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
         // ──── 配置更新回灌 ────
         AppMsg::ConfigUpdated { key, value } => {
-            model.set_config(key.clone(), value);
+            model.set_config(key.clone(), value.clone());
+            if key == "theme" {
+                shell.theme_name = value.clone();
+            }
             shell.push_toast(format!("config: {key} updated"));
             vec![]
         }
@@ -257,9 +275,9 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             return vec![];
         }
 
-        // / 进入过滤模式(Directory tab)
+        // / 进入过滤模式(Directory tab / Messages tab)
         (KeyCode::Char('/'), KeyModifiers::NONE)
-            if !shell.insert_mode && shell.tab == Tab::Directory =>
+            if !shell.insert_mode && matches!(shell.tab, Tab::Directory | Tab::Messages) =>
         {
             shell.filter_active = true;
             shell.filter_query = Some(String::new());
@@ -299,6 +317,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             shell.cursor = 0;
             shell.insert_mode = false;
             shell.group_detail_active = false;
+            shell.selected_set.clear();
             shell.input_buf.clear();
             // 同步 focus 到对应 tab
             shell.focus = match shell.tab {
@@ -433,6 +452,47 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
                 vec![]
             }
         },
+        // d(Messages tab): delete 当前消息(只删本地缓存)
+        (KeyCode::Char('d'), KeyModifiers::NONE) if shell.tab == Tab::Messages => {
+            let msgs: Vec<_> = model.messages.iter().rev().collect();
+            if let Some(msg) = msgs.get(shell.cursor) {
+                let msg_id = msg.id.clone();
+                // 从 VecDeque 中移除。messages 按 push_back 追加，rev 遍历取第 cursor 条。
+                if let Some(idx) = model.messages.iter().position(|m| m.id == msg_id) {
+                    model.messages.remove(idx);
+                }
+                // 修正 cursor
+                let len = model.messages.len();
+                if len == 0 {
+                    shell.cursor = 0;
+                } else if shell.cursor >= len {
+                    shell.cursor = len - 1;
+                }
+                shell.push_toast(format!("deleted: {msg_id}"));
+            }
+            vec![]
+        }
+        // D(Shift+d, Messages tab): clear all messages
+        (KeyCode::Char('D'), KeyModifiers::SHIFT) if shell.tab == Tab::Messages => {
+            let count = model.messages.len();
+            model.messages.clear();
+            shell.cursor = 0;
+            shell.push_toast(format!("cleared {count} messages"));
+            vec![]
+        }
+        // m(Messages tab): mark-read 当前消息(orchestration check --ack)
+        (KeyCode::Char('m'), KeyModifiers::NONE) if shell.tab == Tab::Messages => {
+            let msgs: Vec<_> = model.messages.iter().rev().collect();
+            if let Some(msg) = msgs.get(shell.cursor) {
+                let delivery_id = msg.id.clone();
+                // 本地也标记已读
+                if let Some(idx) = model.messages.iter().position(|m| m.id == delivery_id) {
+                    model.messages[idx].read = 1;
+                }
+                return vec![Cmd::MarkRead { delivery_id }];
+            }
+            vec![]
+        }
         // s(in Directory tab): switch/activate selected agent's tab
         (KeyCode::Char('s'), KeyModifiers::NONE) => {
             let selected_handle = selected_agent_handle(model, shell);
@@ -442,6 +502,18 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             } else {
                 vec![]
             }
+        }
+
+        // Space(in Directory tab): toggle multi-select
+        (KeyCode::Char(' '), KeyModifiers::NONE) if shell.tab == Tab::Directory => {
+            if let Some(handle) = selected_agent_handle(model, shell) {
+                if shell.selected_set.contains(&handle) {
+                    shell.selected_set.remove(&handle);
+                } else {
+                    shell.selected_set.insert(handle);
+                }
+            }
+            vec![]
         }
 
         // p(in Directory tab): PTY 直接注入模式
@@ -629,6 +701,20 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
                 return vec![Cmd::OrchestrationReply { id: id.to_string(), body: body.to_string() }];
             }
 
+            // 解析 "batch:<handles-comma> <message>" 格式(批量发送)
+            if let Some((handles_str, msg)) = buf.strip_prefix("batch:").and_then(|s| s.split_once(' ')) {
+                if msg.is_empty() {
+                    return vec![];
+                }
+                let handles: Vec<String> = handles_str.split(',').map(|s| s.trim().to_string()).collect();
+                _shell.push_toast(format!("Batch sending to {} agents...", handles.len()));
+                return handles.into_iter().map(|h| Cmd::OrchestrationSend {
+                    to: h,
+                    subject: msg.to_string(),
+                    body: String::new(),
+                }).collect();
+            }
+
             vec![]
         }
 
@@ -789,9 +875,17 @@ fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String
         Tab::Groups => std::borrow::Cow::Owned(
             model.groups.keys().cloned().collect::<Vec<_>>(),
         ),
-        Tab::Messages => std::borrow::Cow::Owned(
-            model.messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
-        ),
+        Tab::Messages => {
+            let all_ids: Vec<String> = model.messages.iter().map(|m| m.id.clone()).collect();
+            if shell.filter_active {
+                let q = shell.filter_query.as_deref().unwrap_or("");
+                std::borrow::Cow::Owned(crate::model::messages_filter_ids(
+                    &model.messages, q,
+                ))
+            } else {
+                std::borrow::Cow::Owned(all_ids)
+            }
+        }
     }
 }
 
@@ -873,6 +967,23 @@ mod tests {
 
     fn make_ctrl_key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn make_test_msg(id: &str, from: &str, to: &str, subject: &str) -> crate::model::OrchMessage {
+        crate::model::OrchMessage {
+            id: id.to_string(),
+            from_handle: from.to_string(),
+            to_handle: to.to_string(),
+            subject: subject.to_string(),
+            body: String::new(),
+            msg_type: "status".to_string(),
+            priority: String::new(),
+            thread_id: None,
+            payload: None,
+            read: 0,
+            sequence: 0,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
     }
 
     #[test]
@@ -1029,5 +1140,107 @@ mod tests {
         );
         assert!(cmds.is_empty());
         assert_eq!(shell.toasts.len(), 1);
+    }
+
+    #[test]
+    fn update_messages_delete_single() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        shell.tab = Tab::Messages;
+
+        // 添加 3 条消息
+        model.push_message(make_test_msg("m1", "alice", "bob", "hello"));
+        model.push_message(make_test_msg("m2", "bob", "alice", "world"));
+        model.push_message(make_test_msg("m3", "carol", "alice", "test"));
+
+        // cursor=0 → 最新消息(m3, 因为 rev)
+        shell.cursor = 0;
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('d'))));
+        assert_eq!(model.messages.len(), 2);
+        // m3 应该被删除
+        assert!(model.messages.iter().all(|m| m.id != "m3"));
+    }
+
+    #[test]
+    fn update_messages_clear_all() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        shell.tab = Tab::Messages;
+
+        model.push_message(make_test_msg("m1", "alice", "bob", "hello"));
+        model.push_message(make_test_msg("m2", "bob", "alice", "world"));
+
+        let _ = update(&mut model, &mut shell, AppMsg::Key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)));
+        assert!(model.messages.is_empty());
+        assert_eq!(shell.cursor, 0);
+    }
+
+    #[test]
+    fn update_messages_mark_read() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        shell.tab = Tab::Messages;
+
+        model.push_message(make_test_msg("m1", "alice", "bob", "hello"));
+        shell.cursor = 0;
+
+        let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('m'))));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::MarkRead { delivery_id } if delivery_id == "m1")));
+        // 本地也标记已读
+        assert_eq!(model.messages[0].read, 1);
+    }
+
+    #[test]
+    fn update_messages_filter_key() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        shell.tab = Tab::Messages;
+
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('/'))));
+        assert!(shell.filter_active);
+        assert!(shell.filter_query.is_some());
+    }
+
+    #[test]
+    fn update_ack_ok_toast() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        let cmds = update(&mut model, &mut shell, AppMsg::AckOk("m1".to_string()));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::RefreshUnread)));
+        assert_eq!(shell.toasts.len(), 1);
+        assert!(shell.toasts[0].0.contains("Marked read"));
+    }
+
+    #[test]
+    fn update_ack_failed_toast() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        let cmds = update(&mut model, &mut shell, AppMsg::AckFailed("err".to_string()));
+        assert!(cmds.is_empty());
+        assert_eq!(shell.toasts.len(), 1);
+    }
+
+    #[test]
+    fn messages_filter_ids_by_from() {
+        let mut model = Model::new();
+        model.push_message(make_test_msg("m1", "alice", "bob", "hello"));
+        model.push_message(make_test_msg("m2", "bob", "alice", "world"));
+        model.push_message(make_test_msg("m3", "carol", "alice", "test"));
+
+        let ids = crate::model::messages_filter_ids(&model.messages, "from:alice");
+        assert_eq!(ids, vec!["m1"]);
+
+        let all = crate::model::messages_filter_ids(&model.messages, "");
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn messages_filter_ids_fuzzy() {
+        let mut model = Model::new();
+        model.push_message(make_test_msg("m1", "alice", "bob", "hello world"));
+        model.push_message(make_test_msg("m2", "bob", "alice", "goodbye"));
+
+        let ids = crate::model::messages_filter_ids(&model.messages, "hello");
+        assert_eq!(ids, vec!["m1"]);
     }
 }

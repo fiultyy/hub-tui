@@ -61,6 +61,10 @@ pub enum AppMsg {
     /// orchestration inbox drain 完成(ADR-4)。
     MessagesDrained(Vec<crate::model::OrchMessage>),
     /// orchestration inbox 全量未读数刷新(handle → count)。
+    /// mark-read 成功(delivery_id)。
+    AckOk(String),
+    /// mark-read 失败(error)。
+    AckFailed(String),
     UnreadUpdated(std::collections::HashMap<String, usize>),
     /// socket 查询请求(来自 agent 连接)。
     SocketQuery(SocketReq),

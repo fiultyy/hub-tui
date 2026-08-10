@@ -40,21 +40,77 @@ pub struct Theme {
 /// Catppuccin Mocha palette — 成熟、柔和不刺眼。
 impl Default for Theme {
     fn default() -> Self {
+        Self::mocha()
+    }
+}
+
+impl Theme {
+    /// 按名称选择主题。未知名称 fallback 到 mocha。
+    pub fn from_name(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "light" => Self::light(),
+            "contrast" | "hc" | "high-contrast" => Self::contrast(),
+            _ => Self::mocha(), // "default" / "dark" / "mocha" / unknown
+        }
+    }
+
+    /// Catppuccin Mocha(默认深色)。
+    pub fn mocha() -> Self {
         Self {
-            fg: Color::Rgb(205, 214, 244),       // Catppuccin text
-            bg: Color::Rgb(30, 30, 46),          // Catppuccin base
-            accent: Color::Rgb(137, 180, 250),    // Catppuccin blue
-            muted: Color::Rgb(147, 153, 178),    // Catppuccin overlay0
-            working: Color::Rgb(166, 227, 161),   // Catppuccin green
-            idle: Color::Rgb(147, 153, 178),      // Catppuccin overlay0
-            error: Color::Rgb(243, 139, 168),     // Catppuccin red
-            border: Color::Rgb(88, 91, 112),       // Catppuccin surface0
-            border_focus: Color::Rgb(137, 180, 250), // Catppuccin blue
-            selection_bg: Color::Rgb(49, 50, 68),   // Catppuccin surface0
-            selection_fg: Color::Rgb(205, 214, 244), // Catppuccin text
-            success: Color::Rgb(166, 227, 161),     // Catppuccin green
-            tab_active: Color::Rgb(137, 180, 250),  // Catppuccin blue
-            tab_inactive: Color::Rgb(88, 91, 112),  // Catppuccin surface0
+            fg: Color::Rgb(205, 214, 244),
+            bg: Color::Rgb(30, 30, 46),
+            accent: Color::Rgb(137, 180, 250),
+            muted: Color::Rgb(147, 153, 178),
+            working: Color::Rgb(166, 227, 161),
+            idle: Color::Rgb(147, 153, 178),
+            error: Color::Rgb(243, 139, 168),
+            border: Color::Rgb(88, 91, 112),
+            border_focus: Color::Rgb(137, 180, 250),
+            selection_bg: Color::Rgb(49, 50, 68),
+            selection_fg: Color::Rgb(205, 214, 244),
+            success: Color::Rgb(166, 227, 161),
+            tab_active: Color::Rgb(137, 180, 250),
+            tab_inactive: Color::Rgb(88, 91, 112),
+        }
+    }
+
+    /// 浅色主题(暖白底,适合明亮环境)。
+    pub fn light() -> Self {
+        Self {
+            fg: Color::Rgb(60, 56, 54),
+            bg: Color::Rgb(245, 240, 235),
+            accent: Color::Rgb(0, 123, 167),
+            muted: Color::Rgb(146, 131, 116),
+            working: Color::Rgb(46, 125, 50),
+            idle: Color::Rgb(146, 131, 116),
+            error: Color::Rgb(198, 40, 40),
+            border: Color::Rgb(189, 174, 147),
+            border_focus: Color::Rgb(0, 123, 167),
+            selection_bg: Color::Rgb(221, 214, 207),
+            selection_fg: Color::Rgb(60, 56, 54),
+            success: Color::Rgb(46, 125, 50),
+            tab_active: Color::Rgb(0, 123, 167),
+            tab_inactive: Color::Rgb(189, 174, 147),
+        }
+    }
+
+    /// 高对比度主题(纯黑白,最大可读性)。
+    pub fn contrast() -> Self {
+        Self {
+            fg: Color::Rgb(255, 255, 255),
+            bg: Color::Rgb(0, 0, 0),
+            accent: Color::Rgb(0, 255, 255),
+            muted: Color::Rgb(160, 160, 160),
+            working: Color::Rgb(0, 255, 0),
+            idle: Color::Rgb(128, 128, 128),
+            error: Color::Rgb(255, 0, 0),
+            border: Color::Rgb(96, 96, 96),
+            border_focus: Color::Rgb(0, 255, 255),
+            selection_bg: Color::Rgb(48, 48, 48),
+            selection_fg: Color::Rgb(255, 255, 255),
+            success: Color::Rgb(0, 255, 0),
+            tab_active: Color::Rgb(0, 255, 255),
+            tab_inactive: Color::Rgb(64, 64, 64),
         }
     }
 }

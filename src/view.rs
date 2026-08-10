@@ -21,7 +21,7 @@ use crate::shell::{ConnState, Shell, Tab};
 
 /// 主 draw 入口。immediate-mode: 不 &mut Model/Shell。
 pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
-    let theme = Theme::default();
+    let theme = Theme::from_name(&shell.theme_name);
     let area = f.area();
 
     // 终端太小: 不渲染
@@ -338,7 +338,8 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                     let is_selected = *sorted_idx == shell.cursor;
                     let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h };
                     let unread = *model.unread_counts.get(&agent.handle).unwrap_or(&0);
-                    draw_agent_card(f, agent, card_area, theme, is_selected, unread);
+                    let shell_sel = shell.selected_set.contains(&agent.handle);
+                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, unread);
                 }
             }
         }
@@ -484,6 +485,7 @@ fn draw_agent_card(
     area: Rect,
     theme: &Theme,
     selected: bool,
+    shell_selected: bool,
     unread: usize,
 ) {
     use unicode_width::UnicodeWidthStr;
@@ -496,7 +498,7 @@ fn draw_agent_card(
     f.render_widget(ratatui::widgets::Clear, area);
 
     // ── row 0: source图标 + title + badge | 状态图标 + elapsed(右对齐) ──
-    let icon = source_icon(agent.source.as_deref());
+    let icon = if shell_selected { "\u{2713}" } else { source_icon(agent.source.as_deref()) }; // ✓ if selected
     let cat = StatusCategory::from_agent(agent);
     let title_text = agent.title.as_deref().unwrap_or("").trim();
     let badge_str = if unread > 0 { format!(" ({unread})") } else { String::new() };
@@ -778,7 +780,8 @@ fn draw_group_detail(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, th
     }
 }
 
-/// Messages tab: inbox 消息流(按 thread_id 分组, 最近在上)。
+/// Messages tab: inbox 消息流(按 thread_id 分组缩进, 最近在上)。
+/// 过滤模式: 只显示 filter_query 匹配的消息。
 fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     let focused = matches!(shell.focus, crate::shell::FocusTarget::Messages);
     let block = blocks::bordered_block("Messages", focused, theme);
@@ -794,25 +797,55 @@ fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
         return;
     }
 
-    // 消息列表: 最新在上(遍历 order 是 vecdeque, 前头=旧, 后尾=新)
+    // 过滤: filter_active 时只显示匹配消息
+    let filtered_ids: Option<Vec<String>> = if shell.filter_active {
+        let q = shell.filter_query.as_deref().unwrap_or("");
+        if q.is_empty() {
+            None
+        } else {
+            Some(crate::model::messages_filter_ids(&model.messages, q))
+        }
+    } else {
+        None
+    };
+
+    // 消息列表: 最新在上(rev 遍历 VecDeque)
     let items: Vec<ListItem> = model
         .messages
         .iter()
         .rev()
+        .filter(|msg| {
+            // 过滤检查
+            match &filtered_ids {
+                Some(ids) => ids.contains(&msg.id),
+                None => true,
+            }
+        })
         .map(|msg| {
             let from = crate::render::truncate_width(&msg.from_handle, 16);
             let subject = crate::render::truncate_width(&msg.subject, 50);
             let time = crate::render::truncate_width(&msg.created_at, 19);
 
-            let thread_mark = msg
-                .thread_id
-                .as_deref()
-                .map(|_| "↩")
-                .unwrap_or("·");
+            // thread 分组缩进: thread 消息前加 "  " 缩进 + ↩ 标记
+            let (indent, thread_mark) = if msg.thread_id.is_some() {
+                ("  ", "↩")
+            } else {
+                ("", "·")
+            };
+
+            // 已读/未读指示: read==0 = 未读(加粗), read!=0 = 已读(暗淡)
+            let (fg_subject, modifier) = if msg.read == 0 {
+                (theme.fg, Modifier::BOLD)
+            } else {
+                (theme.muted, Modifier::empty())
+            };
+
+            // 已读标记
+            let read_mark = if msg.read != 0 { "✓" } else { " " };
 
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!(" {} ", thread_mark),
+                    format!("{}{} ", indent, thread_mark),
                     Style::default().fg(theme.accent),
                 ),
                 Span::styled(
@@ -822,13 +855,27 @@ fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
                 Span::styled(" → ", Style::default().fg(theme.muted)),
                 Span::styled(
                     crate::render::pad_left(&subject, 50),
-                    Style::default().fg(theme.fg),
+                    Style::default().fg(fg_subject).add_modifier(modifier),
                 ),
-                Span::styled(format!("  {}", time), Style::default().fg(theme.muted)),
+                Span::styled(
+                    format!(" {} ", read_mark),
+                    Style::default().fg(theme.success),
+                ),
+                Span::styled(format!(" {}", time), Style::default().fg(theme.muted)),
             ]))
         })
         .collect();
 
+    if items.is_empty() {
+        let no_match = Paragraph::new(Span::styled(
+            "(no messages match filter)",
+            Style::default().fg(theme.muted),
+        ));
+        f.render_widget(no_match, inner);
+        return;
+    }
+
+    let len = items.len();
     let list = List::new(items).highlight_style(
         Style::default()
             .bg(theme.selection_bg)
@@ -836,14 +883,13 @@ fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
     );
 
     let mut state = ListState::default();
-    let len = model.messages.len();
-    if !model.messages.is_empty() {
+    if len > 0 {
         state.select(Some(shell.cursor.min(len - 1)));
     }
 
     f.render_stateful_widget(list, inner, &mut state);
-}
 
+}
 /// 输入栏: insert_mode 时显示 input_buf + 光标。
 fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     if shell.insert_mode {
@@ -932,7 +978,7 @@ fn status_hint(shell: &Shell) -> String {
     match shell.tab {
         Tab::Directory => " j/k:nav i:input s:switch p:pty w:worktree /:filter ?:help ".to_string(),
         Tab::Groups => " j/k:nav Enter:detail g:next Tab:switch ?:help ".to_string(),
-        Tab::Messages => " j/k:nav g:next Tab:switch ?:help ".to_string(),
+        Tab::Messages => " j/k:nav d:del D:clear m:mark-read /:filter g:next ?:help ".to_string(),
     }
 }
 
