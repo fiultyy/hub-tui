@@ -358,6 +358,10 @@ impl Model {
         self.config.get("default_filter").map(|s| s.as_str()).unwrap_or("")
     }
 
+    /// 获取排序模式(默认 by-worktree)。
+    pub fn sort_mode(&self) -> SortMode {
+        SortMode::from_str(self.get_config("sort", "by-worktree").as_str())
+    }
     /// 更新编排快照。
     pub fn apply_orch_snapshot(&mut self, snapshot: OrchSnapshot) {
         self.orch_snapshot = Some(snapshot);
@@ -421,40 +425,120 @@ pub struct OrchGateEntry {
     pub status: String,
 }
 
-/// Directory 排序: 按 worktreePath 分组, 组间按最近活跃(max lastOutputAt)降序,
-/// 组内按 lastOutputAt 降序 + handle 升序。最近活跃的组排最前。
-/// 所有 cursor/导航/hit_test 逻辑共享此排序, 保证分区一致性。
+/// Directory 排序模式(从 model.config["sort"] 读)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortMode {
+    ByWorktree,
+    ByState,
+    BySource,
+    ByName,
+}
+
+impl SortMode {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "by-state" | "state" => Self::ByState,
+            "by-source" | "source" => Self::BySource,
+            "by-name" | "name" => Self::ByName,
+            _ => Self::ByWorktree, // "by-worktree" / "worktree" / unknown
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ByWorktree => "by-worktree",
+            Self::ByState => "by-state",
+            Self::BySource => "by-source",
+            Self::ByName => "by-name",
+        }
+    }
+}
+
+/// Directory 排序: 按 sort_mode 选择策略, 保证 cursor/导航/hit_test 一致性。
 pub fn directory_sorted_handles(directory: &HashMap<String, Agent>) -> Vec<String> {
-    // 按 worktreePath(agent.cwd)分组
-    let mut groups: HashMap<&str, Vec<&Agent>> = HashMap::new();
-    for a in directory.values() {
-        groups.entry(a.cwd.as_str()).or_default().push(a);
+    directory_sorted_with_mode(directory, SortMode::ByWorktree)
+}
+
+/// 带排序模式的版本。
+pub fn directory_sorted_with_mode(
+    directory: &HashMap<String, Agent>,
+    mode: SortMode,
+) -> Vec<String> {
+    let mut entries: Vec<&Agent> = directory.values().collect();
+
+    match mode {
+        SortMode::ByWorktree => {
+            // worktreePath 分组 + 组间最近活跃 + 组内 lastOutputAt 降序
+            let mut groups: HashMap<&str, Vec<&Agent>> = HashMap::new();
+            for a in directory.values() {
+                groups.entry(a.cwd.as_str()).or_default().push(a);
+            }
+            let group_activity = |agents: &[&Agent]| -> i64 {
+                agents.iter().filter_map(|a| a.last_output_at).max().unwrap_or(0)
+            };
+            let mut group_list: Vec<(&str, Vec<&Agent>)> = groups.into_iter().collect();
+            group_list.sort_by(|a, b| {
+                group_activity(&b.1)
+                    .cmp(&group_activity(&a.1))
+                    .then_with(|| a.0.cmp(b.0))
+            });
+            for (_, agents) in group_list.iter_mut() {
+                agents.sort_by(|a, b| {
+                    b.last_output_at.unwrap_or(0)
+                        .cmp(&a.last_output_at.unwrap_or(0))
+                        .then_with(|| a.handle.cmp(&b.handle))
+                });
+            }
+            group_list
+                .into_iter()
+                .flat_map(|(_, agents)| agents)
+                .map(|a| a.handle.clone())
+                .collect()
+        }
+        SortMode::ByState => {
+            // 按状态优先级(working → waiting → blocked → error → done → unknown)
+            entries.sort_by(|a, b| {
+                StatusCategory::from_agent(a)
+                    .cmp(&StatusCategory::from_agent(b))
+                    .then_with(|| {
+                        b.last_output_at.unwrap_or(0).cmp(&a.last_output_at.unwrap_or(0))
+                    })
+                    .then_with(|| a.handle.cmp(&b.handle))
+            });
+            entries.into_iter().map(|a| a.handle.clone()).collect()
+        }
+        SortMode::BySource => {
+            // 按 source 分组, 组内最近活跃
+            let mut groups: HashMap<&str, Vec<&Agent>> = HashMap::new();
+            for a in directory.values() {
+                let key = a.source.as_deref().unwrap_or("unknown");
+                groups.entry(key).or_default().push(a);
+            }
+            let mut group_list: Vec<(&str, Vec<&Agent>)> = groups.into_iter().collect();
+            group_list.sort_by(|a, b| a.0.cmp(b.0));
+            for (_, agents) in group_list.iter_mut() {
+                agents.sort_by(|a, b| {
+                    b.last_output_at.unwrap_or(0)
+                        .cmp(&a.last_output_at.unwrap_or(0))
+                        .then_with(|| a.handle.cmp(&b.handle))
+                });
+            }
+            group_list
+                .into_iter()
+                .flat_map(|(_, agents)| agents)
+                .map(|a| a.handle.clone())
+                .collect()
+        }
+        SortMode::ByName => {
+            // 按 title 字母序, title 空的按 handle
+            entries.sort_by(|a, b| {
+                let na = a.title.as_deref().unwrap_or(&a.handle);
+                let nb = b.title.as_deref().unwrap_or(&b.handle);
+                na.cmp(nb).then_with(|| a.handle.cmp(&b.handle))
+            });
+            entries.into_iter().map(|a| a.handle.clone()).collect()
+        }
     }
-    // 组活跃度 = 组内 max(lastOutputAt); None 视为 0
-    let group_activity = |agents: &[&Agent]| -> i64 {
-        agents.iter().filter_map(|a| a.last_output_at).max().unwrap_or(0)
-    };
-    let mut group_list: Vec<(&str, Vec<&Agent>)> = groups.into_iter().collect();
-    // 组间: 最近活跃优先(降序), cwd 字符串升序兜底(确定性, 防 HashMap 乱序)
-    group_list.sort_by(|a, b| {
-        group_activity(&b.1)
-            .cmp(&group_activity(&a.1))
-            .then_with(|| a.0.cmp(b.0))
-    });
-    // 组内: lastOutputAt 降序, handle 升序兜底(稳定)
-    for (_, agents) in group_list.iter_mut() {
-        agents.sort_by(|a, b| {
-            b.last_output_at
-                .unwrap_or(0)
-                .cmp(&a.last_output_at.unwrap_or(0))
-                .then_with(|| a.handle.cmp(&b.handle))
-        });
-    }
-    group_list
-        .into_iter()
-        .flat_map(|(_, agents)| agents)
-        .map(|a| a.handle.clone())
-        .collect()
 }
 
 /// 从 sorted handles 中过滤出匹配 query 的 handles。

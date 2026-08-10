@@ -8,7 +8,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::msg::AppMsg;
-use crate::model::{directory_sorted_handles, Agent, OrchMessage, Model};
+use crate::model::{directory_sorted_with_mode, SortMode, Agent, OrchMessage, Model};
 use crate::shell::{FocusTarget, Shell, Tab};
 use crate::view::{directory_layout, directory_scroll, LayoutItem};
 
@@ -527,6 +527,45 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             vec![]
         }
 
+        // y(in Directory tab): yank handle to clipboard
+        (KeyCode::Char('y'), KeyModifiers::NONE) if shell.tab == Tab::Directory => {
+            if let Some(handle) = selected_agent_handle(model, shell) {
+                yank_to_clipboard(&handle);
+                shell.push_toast(format!("Yanked: {handle}"));
+            }
+            vec![]
+        }
+
+
+        // 1-9: jump to group N (Directory tab only)
+        (KeyCode::Char(c @ '1'..='9'), KeyModifiers::NONE) if shell.tab == Tab::Directory => {
+            let group_num = c.to_digit(10).unwrap() as usize; // 1-based
+            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
+            // compute group start indices: walk sorted, find boundaries where cwd changes
+            let mut group_starts: Vec<usize> = Vec::new();
+            let mut prev_cwd: Option<&str> = None;
+            for (idx, handle) in sorted.iter().enumerate() {
+                let cwd = &model.directory[handle].cwd;
+                if prev_cwd != Some(cwd.as_str()) {
+                    group_starts.push(idx);
+                    prev_cwd = Some(cwd.as_str());
+                }
+            }
+            // group_num is 1-based; bounds check
+            if group_num <= group_starts.len() {
+                let target_idx = group_starts[group_num - 1];
+                let group_cwd = &model.directory[&sorted[target_idx]].cwd;
+                let display = if group_cwd.starts_with("/home/") {
+                    format!("~/{}", &group_cwd[6..])
+                } else {
+                    group_cwd.clone()
+                };
+                shell.cursor = target_idx;
+                shell.push_toast(format!("Jumped to group {group_num}: {display}"));
+            }
+            vec![]
+        }
+
         _ => vec![],
     }
 }
@@ -680,7 +719,7 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
                                 return vec![];
                             }
                         }
-                        "theme" | "default_filter" => {}
+                        "theme" | "default_filter" | "sort" => {}
                         _ => {
                             _shell.push_toast(format!("config: unknown key '{key}'"));
                             return vec![];
@@ -860,7 +899,7 @@ fn handle_overlay_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec
 fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String]> {
     match shell.tab {
         Tab::Directory => {
-            let sorted = directory_sorted_handles(&model.directory);
+            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
             if shell.filter_active {
                 let q = shell.filter_query.as_deref().unwrap_or("");
                 std::borrow::Cow::Owned(crate::model::directory_filter_handles(
@@ -897,10 +936,10 @@ pub fn selected_agent_handle_public(model: &Model, shell: &Shell) -> Option<Stri
 fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
     let handles: Vec<String> = if shell.filter_active && shell.tab == Tab::Directory {
         let q = shell.filter_query.as_deref().unwrap_or("");
-        let sorted = directory_sorted_handles(&model.directory);
+        let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
         crate::model::directory_filter_handles(&sorted, &model.directory, q)
     } else {
-        directory_sorted_handles(&model.directory)
+        directory_sorted_with_mode(&model.directory, model.sort_mode())
     };
     handles.get(shell.cursor).cloned()
 }
@@ -932,7 +971,7 @@ fn hit_test_card(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<usize> 
     let inner_w = shell.size.0.saturating_sub(2);
     let inner_h = shell.size.1.saturating_sub(5);
 
-    let sorted = directory_sorted_handles(&model.directory);
+    let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode());
     let layout = directory_layout(&sorted, model, inner_x, inner_w);
     let scroll_y = directory_scroll(shell.cursor, &layout, inner_h);
 
@@ -956,6 +995,30 @@ fn hit_test_card(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<usize> 
     None
 }
 
+/// Yank text to system clipboard via pbcopy/xclip/xsel (zero deps).
+fn yank_to_clipboard(text: &str) {
+    use std::io::Write;
+    // Try pbcopy (macOS) → xclip (Linux X11) → xsel (Linux)
+    for (cmd, args) in [
+        ("pbcopy", &[][..]),
+        ("xclip", &["-selection", "clipboard"][..]),
+        ("xsel", &["--clipboard", "--input"][..]),
+    ] {
+        if let Ok(mut child) = std::process::Command::new(cmd)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+            return; // success, stop trying
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1242,5 +1305,105 @@ mod tests {
 
         let ids = crate::model::messages_filter_ids(&model.messages, "hello");
         assert_eq!(ids, vec!["m1"]);
+    }
+
+    // ── quick-jump digit 1-9 tests ──
+
+    fn make_agent(handle: &str, cwd: &str, last_output_at: Option<i64>) -> Agent {
+        Agent {
+            handle: handle.into(),
+            pty_id: None,
+            cwd: cwd.into(),
+            worktree_id: format!("w-{handle}"),
+            branch: "main".into(),
+            tab_id: format!("t-{handle}"),
+            leaf_id: format!("l-{handle}"),
+            pane_key: String::new(),
+            title: None,
+            connected: true,
+            writable: true,
+            source: None,
+            state: None,
+            last_output_at,
+            prompt: None,
+            tool_name: None,
+            tool_input: None,
+            last_assistant_msg: None,
+            preview: None,
+        }
+    }
+
+    #[test]
+    fn digit_jump_to_group_1() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        // group A (most active) at /home/yy/proj-a, group B at /home/yy/proj-b
+        model.apply_agents(vec![
+            make_agent("a1", "/home/yy/proj-a", Some(100)),
+            make_agent("a2", "/home/yy/proj-a", Some(50)),
+            make_agent("b1", "/home/yy/proj-b", Some(10)),
+        ]);
+        // sorted: a1(100), a2(50) → group 1; b1(10) → group 2
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('1'))));
+        assert_eq!(shell.cursor, 0); // first agent in group 1
+        assert!(shell.toasts.iter().any(|t| t.0.contains("Jumped to group 1")));
+    }
+
+    #[test]
+    fn digit_jump_to_group_2() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        model.apply_agents(vec![
+            make_agent("a1", "/home/yy/proj-a", Some(100)),
+            make_agent("b1", "/home/yy/proj-b", Some(10)),
+        ]);
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('2'))));
+        assert_eq!(shell.cursor, 1); // b1 is at sorted index 1
+        assert!(shell.toasts.iter().any(|t| t.0.contains("Jumped to group 2")));
+    }
+
+    #[test]
+    fn digit_jump_out_of_range_ignored() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        model.apply_agents(vec![
+            make_agent("a1", "/home/yy/proj-a", Some(100)),
+        ]);
+        shell.cursor = 0;
+        // only 1 group; pressing 9 should be ignored
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('9'))));
+        assert_eq!(shell.cursor, 0); // unchanged
+        assert!(shell.toasts.is_empty()); // no toast
+    }
+
+    #[test]
+    fn digit_jump_ignored_on_non_directory_tab() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        shell.tab = Tab::Groups;
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('1'))));
+        assert!(shell.toasts.is_empty());
+    }
+
+    #[test]
+    fn digit_jump_toast_shows_tilde_for_home() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        model.apply_agents(vec![
+            make_agent("a1", "/home/yy/.orca", Some(100)),
+        ]);
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('1'))));
+        assert!(shell.toasts.iter().any(|t| t.0.contains("~/yy/.orca")));
+    }
+
+    #[test]
+    fn digit_jump_non_home_path_shows_full() {
+        let mut model = Model::new();
+        let mut shell = Shell::new();
+        model.apply_agents(vec![
+            make_agent("a1", "/opt/project", Some(100)),
+        ]);
+        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('1'))));
+        assert!(shell.toasts.iter().any(|t| t.0.contains("/opt/project")));
     }
 }

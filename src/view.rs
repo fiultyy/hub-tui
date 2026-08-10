@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::model::{directory_sorted_handles, Model, StatusCategory};
+use crate::model::{directory_sorted_with_mode, Model, StatusCategory};
 use crate::render::blocks;
 use crate::render::theme::Theme;
 use crate::shell::{ConnState, Shell, Tab};
@@ -314,10 +314,10 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
 
     let sorted = if shell.filter_active {
         let q = shell.filter_query.as_deref().unwrap_or("");
-        let full = directory_sorted_handles(&model.directory);
+        let full = directory_sorted_with_mode(&model.directory, model.sort_mode());
         crate::model::directory_filter_handles(&full, &model.directory, q)
     } else {
-        directory_sorted_handles(&model.directory)
+        directory_sorted_with_mode(&model.directory, model.sort_mode())
     };
     let layout = directory_layout(&sorted, model, inner.x, inner.width);
     let scroll_y = directory_scroll(shell.cursor, &layout, inner.height);
