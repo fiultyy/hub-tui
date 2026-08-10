@@ -144,6 +144,9 @@ pub struct Model {
     pub messages: VecDeque<OrchMessage>,
     /// 异步 generation guard(范式 3: 防陈旧回调)
     pub generation: u64,
+    /// pending status 缓存: AgentsLoaded 和 StatusUpdated 是异步的,
+    /// 可能 StatusUpdated 先到但 directory 为空。缓存到这,AgentsLoaded 时合并。
+    pub pending_status: HashMap<String, (String, String)>,
 }
 
 impl Model {
@@ -153,21 +156,28 @@ impl Model {
             groups: HashMap::new(),
             messages: VecDeque::new(),
             generation: 0,
+            pending_status: HashMap::new(),
         }
     }
 
     /// 增量更新: terminal list 全量结果。handle 为 key,保留已有 source/state join 数据。
+    /// 同时合并 pending_status(解决 StatusUpdated 先于 AgentsLoaded 的竞态)。
     pub fn apply_agents(&mut self, agents: Vec<Agent>) {
         let mut incoming: HashMap<String, Agent> = agents
             .into_iter()
             .map(|a| (a.handle.clone(), a))
             .collect();
 
-        // 保留已有 agent 的 source/state(join 数据),避免被全量覆盖丢失
+        // 保留已有 agent 的 source/state,并合并 pending_status
         for (handle, incoming_agent) in incoming.iter_mut() {
             if let Some(old) = self.directory.get(handle) {
                 incoming_agent.source = old.source.clone();
                 incoming_agent.state = old.state.clone();
+            }
+            // 合并 pending_status(worktreeId join)
+            if let Some((source, state)) = self.pending_status.get(&incoming_agent.worktree_id) {
+                incoming_agent.source = Some(source.clone());
+                incoming_agent.state = Some(state.clone());
             }
         }
 
@@ -183,13 +193,18 @@ impl Model {
         self.generation += 1;
     }
 
-    /// 增量更新: last-status.json 结果。join key = worktreeId(两源都有且稳定,ADR-5 实测验证)。
+    /// 增量更新: last-status.json 结果。join key = worktreeId。
+    /// 缓存到 pending_status,apply_agents 时合并(解决竞态)。
     pub fn apply_status(&mut self, statuses: Vec<crate::msg::AgentStatus>) {
         let status_map: HashMap<String, (String, String)> = statuses
             .into_iter()
             .map(|s| (s.worktree_id, (s.source, s.state)))
             .collect();
 
+        // 缓存(供后续 apply_agents 合并)
+        self.pending_status.extend(status_map.clone());
+
+        // 立即尝试 join 到现有 directory
         for agent in self.directory.values_mut() {
             if let Some((source, state)) = status_map.get(&agent.worktree_id) {
                 agent.source = Some(source.clone());
