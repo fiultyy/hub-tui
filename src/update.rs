@@ -1002,6 +1002,24 @@ fn expand_alias(model: &Model, buf: String) -> String {
 fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd> {
     // Alias expansion: if the first word matches an alias, expand it before prefix matching
     let buf = expand_alias(model, buf);
+
+    // Chain: split by ' | ' and dispatch each segment sequentially
+    if let Some(rest) = buf.strip_prefix("chain:") {
+        let segments: Vec<&str> = rest.split(" | ").collect();
+        if segments.len() < 2 {
+            shell.push_toast("chain: usage: chain:cmd1 | cmd2 | cmd3".into());
+            return vec![];
+        }
+        let seg_count = segments.len();
+        let mut all_cmds = Vec::new();
+        for seg in segments {
+            let seg = seg.trim();
+            if seg.is_empty() { continue; }
+            all_cmds.extend(dispatch_input(model, shell, seg.to_string()));
+        }
+        shell.push_toast(format!("✓ chain: {} commands executed", seg_count));
+        return all_cmds;
+    }
     if let Some((to, rest)) = buf.strip_prefix("to:").and_then(|s| s.split_once(' ')) {
         let subject = rest.to_string();
         let body = String::new();
