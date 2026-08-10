@@ -181,7 +181,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     }
 }
 
-/// 渲染单个 agent card(纯色块底色,无边框)。
+/// 渲染单个 agent card(纯色块底色,无边框,竖条状态指示)。
 fn draw_agent_card(
     f: &mut Frame,
     agent: &crate::model::Agent,
@@ -189,29 +189,28 @@ fn draw_agent_card(
     theme: &Theme,
     selected: bool,
 ) {
-    // 底色: selected=accent_tint, connected=surface0, disconnected=muted_bg
-    let bg = if selected {
-        Color::Rgb(69, 71, 90)    // Catppuccin surface1
+    use unicode_width::UnicodeWidthStr;
+
+    // 底色 + 左侧竖条色
+    let (bg, bar_fg) = if selected {
+        (Color::Rgb(49, 62, 96), theme.accent)   // 蓝调底 surface1→mauve tint
     } else if agent.connected {
-        Color::Rgb(49, 50, 68)    // Catppuccin surface0
+        (Color::Rgb(40, 41, 58), theme.success)   // 正常 connected
     } else {
-        Color::Rgb(35, 36, 54)    // 比 base 略暗
+        (Color::Rgb(24, 24, 37), theme.muted)     // 离线/暗淡
     };
     let bg_style = Style::default().bg(bg);
 
-    // 先 Clear 再填色块,确保干净
     f.render_widget(ratatui::widgets::Clear, area);
+
     let avail = area.width as usize;
+    let indent = 2usize; // 竖条(1) + gap(1)
 
-    // line 1: 连接灯 + handle + right-aligned title
-    use unicode_width::UnicodeWidthStr;
-    let conn_str = if agent.connected { "● " } else { "○ " };
-    let conn_w = 2usize;
-    let handle_display = crate::render::truncate_width(&agent.handle, 22);
+    // ── line 1: 竖条 + handle + title ──
+    let handle_display = crate::render::truncate_width(&agent.handle, avail - indent - 1);
     let handle_w = UnicodeWidthStr::width(handle_display.as_str());
-
     let title_text = agent.title.as_deref().unwrap_or("").trim();
-    let remaining = avail.saturating_sub(conn_w + handle_w);
+    let remaining = avail.saturating_sub(indent + handle_w);
     let title_trunc = if !title_text.is_empty() && remaining > 2 {
         crate::render::truncate_width(title_text, remaining)
     } else {
@@ -221,21 +220,20 @@ fn draw_agent_card(
     let pad_w = remaining.saturating_sub(title_w);
 
     let line1 = Line::from(vec![
-        Span::styled(
-            conn_str,
-            Style::default()
-                .fg(if agent.connected { theme.success } else { theme.muted })
-                .bg(bg),
-        ),
+        Span::styled("▌", Style::default().fg(bar_fg).bg(bg)),
+        Span::styled(" ", bg_style),
         Span::styled(
             handle_display,
-            Style::default().fg(if selected { theme.accent } else { theme.fg }).bg(bg),
+            Style::default()
+                .fg(if selected { theme.accent } else { theme.fg })
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ".repeat(pad_w), bg_style),
         Span::styled(title_trunc, Style::default().fg(theme.muted).bg(bg)),
     ]);
 
-    // line 2: cwd
+    // ── line 2: cwd ──
     let home = std::env::var("HOME").unwrap_or_default();
     let cwd_display = if agent.cwd.is_empty() {
         "(global)".to_string()
@@ -244,34 +242,38 @@ fn draw_agent_card(
     } else {
         agent.cwd.clone()
     };
-    let cwd_str = crate::render::truncate_width(&cwd_display, (area.width as usize).saturating_sub(2));
-    let cwd_w = cwd_str.chars().count();
+    let cwd_max = avail.saturating_sub(indent + 2); // " " prefix
+    let cwd_str = crate::render::truncate_width(&cwd_display, cwd_max);
+    let cwd_w = UnicodeWidthStr::width(cwd_str.as_str());
     let line2 = Line::from(vec![
-        Span::styled("  ", bg_style),
+        Span::styled(" ", bg_style),
+        Span::styled(" ", bg_style),
         Span::styled(cwd_str, Style::default().fg(theme.muted).bg(bg)),
-        Span::styled(" ".repeat(avail.saturating_sub(2 + cwd_w)), bg_style),
+        Span::styled(" ".repeat(avail.saturating_sub(indent + cwd_w)), bg_style),
     ]);
 
-    // line 3: source · state (branch)
+    // ── line 3: source · state (branch) ──
     let source = agent.source.as_deref().unwrap_or("-");
     let state = agent.state.as_deref().unwrap_or("-");
     let branch = if !agent.branch.is_empty() {
-        format!(" ({})", agent.branch)
+        format!("  {}", agent.branch)
     } else {
         String::new()
     };
+    let meta_max = avail.saturating_sub(indent + 2);
     let meta_str = crate::render::truncate_width(
         &format!("{} · {}{}", source, state, branch),
-        (area.width as usize).saturating_sub(2),
+        meta_max,
     );
-    let meta_w = meta_str.chars().count();
+    let meta_w = UnicodeWidthStr::width(meta_str.as_str());
     let line3 = Line::from(vec![
-        Span::styled("  ", bg_style),
+        Span::styled(" ", bg_style),
+        Span::styled(" ", bg_style),
         Span::styled(
             meta_str,
             Style::default().fg(theme.state_color(agent.state.as_deref())).bg(bg),
         ),
-        Span::styled(" ".repeat(avail.saturating_sub(2 + meta_w)), bg_style),
+        Span::styled(" ".repeat(avail.saturating_sub(indent + meta_w)), bg_style),
     ]);
 
     let content = ratatui::widgets::Paragraph::new(vec![line1, line2, line3]);

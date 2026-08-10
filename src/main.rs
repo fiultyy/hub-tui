@@ -39,7 +39,7 @@ fn main() -> io::Result<()> {
     // TUI 启动
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, crossterm::event::EnableMouseCapture)?;
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
 
     let model = Arc::new(RwLock::new(Model::new()));
@@ -55,7 +55,7 @@ fn main() -> io::Result<()> {
     let result = run_loop(&mut term, &rx, &model, &mut shell, &mut svc, &tx);
 
     // restore
-    disable_raw_mode()?;
+    execute!(term.backend_mut(), crossterm::event::DisableMouseCapture)?;
     execute!(term.backend_mut(), LeaveAlternateScreen)?;
     result
 }
@@ -118,6 +118,16 @@ fn run_loop(
                         return Ok(());
                     }
                     svc.execute(cmds);
+                }
+                Event::Mouse(m) => {
+                    if m.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+                        let cmds = update::update(
+                            &mut model.write(),
+                            shell,
+                            AppMsg::MouseLeftClick { x: m.column, y: m.row },
+                        );
+                        svc.execute(cmds);
+                    }
                 }
                 Event::Resize(w, h) => {
                     let cmds = update::update(&mut model.write(), shell, AppMsg::Resize { width: w, height: h });

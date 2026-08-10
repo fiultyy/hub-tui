@@ -62,8 +62,15 @@ fn should_refresh_agents(shell: &Shell) -> bool {
 /// 纯函数 reducer。绝不 IO, 改 Model/Shell + 返 Cmd Vec。
 pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
     match msg {
-        // ──── 键盘(直接映射 crossterm KeyEvent) ────
         AppMsg::Key(k) => handle_key(model, shell, k),
+
+        // ──── 鼠标左键点击(选中 card) ────
+        AppMsg::MouseLeftClick { x, y } => {
+            if let Some(idx) = hit_test_card(model, shell, x, y) {
+                shell.cursor = idx;
+            }
+            vec![]
+        }
 
         // ──── 终端尺寸变化 ────
         AppMsg::Resize { width, height } => {
@@ -349,6 +356,60 @@ fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
         _ => return None,
     };
     keys.get(shell.cursor).cloned()
+}
+
+/// 鼠标点击命中测试: (x, y) 是否落在某个 agent card 上,返回 sorted index。
+/// 复用 draw_directory 的卡片网格布局参数。
+fn hit_test_card(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<usize> {
+    if !matches!(shell.tab, Tab::Directory) {
+        return None;
+    }
+    let total = model.directory.len();
+    if total == 0 {
+        return None;
+    }
+
+    // 卡片网格参数(与 draw_directory 一致)
+    let card_w: u16 = 36;
+    let card_h: u16 = 4; // 3 content + 1 gap
+    let gap: u16 = 1;
+
+    // 可用区域 = shell.size 减去 TabBar(1) + border(2) + input(1) + status(1)
+    let inner_x = 1u16; // border left
+    let inner_y = 2u16; // TabBar(1) + border top
+    let inner_w = shell.size.0.saturating_sub(2); // minus left/right border
+    let inner_h = shell.size.1.saturating_sub(5); // TabBar+border+input+status
+
+    let cols = (((inner_w + gap) / (card_w + gap)).max(1)) as usize;
+    let rows_per_col = (inner_h / card_h) as usize;
+    let visible = cols * rows_per_col;
+    let scroll = if total <= visible { 0 } else { (shell.cursor / visible) * visible };
+
+    // 哪一列哪一行?
+    let rel_x = x.saturating_sub(inner_x);
+    let rel_y = y.saturating_sub(inner_y);
+    let col = (rel_x / (card_w + gap)) as usize;
+    let row = (rel_y / card_h) as usize;
+    let x_in_card = rel_x % (card_w + gap);
+
+    // 边界检查
+    if col >= cols || row >= rows_per_col {
+        return None;
+    }
+    if x_in_card >= card_w {
+        return None; // 落在 gap 列
+    }
+    let y_in_card = rel_y % card_h;
+    if y_in_card >= 3 {
+        return None; // 落在 gap 行
+    }
+
+    let idx = scroll + row * cols + col;
+    if idx < total {
+        Some(idx)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

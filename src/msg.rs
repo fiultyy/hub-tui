@@ -36,6 +36,8 @@ pub struct SocketReq {
 pub enum AppMsg {
     /// 键盘按键(crossterm KeyEvent)。
     Key(KeyEvent),
+    /// 鼠标左键点击(终端坐标)。
+    MouseLeftClick { x: u16, y: u16 },
     /// 终端尺寸变化。
     Resize { width: u16, height: u16 },
     /// 定时 tick(驱动 spinner/toast 超时/状态刷新)。
