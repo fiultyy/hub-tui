@@ -45,6 +45,10 @@ struct LastStatusEntry {
 #[derive(serde::Deserialize)]
 struct LastStatusPayload {
     state: String,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(rename = "toolName", default)]
+    tool_name: Option<String>,
 }
 
 // ───────────────────────── 公开函数 ─────────────────────────
@@ -81,7 +85,6 @@ pub fn read_last_status() -> Result<Vec<crate::msg::AgentStatus>, String> {
     let path = last_status_path();
     let text = fs::read_to_string(&path)
         .map_err(|e| format!("read last-status.json: {e}"))?;
-
     let file: LastStatusFile = serde_json::from_str(&text)
         .map_err(|e| format!("parse last-status.json: {e}"))?;
 
@@ -93,6 +96,8 @@ pub fn read_last_status() -> Result<Vec<crate::msg::AgentStatus>, String> {
             source: e.source,
             state: e.payload.state,
             worktree_id: e.worktree_id,
+            prompt: e.payload.prompt,
+            tool_name: e.payload.tool_name,
         })
         .collect())
 }
@@ -224,7 +229,7 @@ pub fn orchestration_inbox_unread() -> Result<std::collections::HashMap<String, 
 
     let mut unread: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for msg in &parsed.result.messages {
-        if msg.read {
+        if msg.read != 0 {
             continue;
         }
         *unread.entry(msg.to_handle.clone()).or_default() += 1;

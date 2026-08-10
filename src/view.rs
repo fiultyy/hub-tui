@@ -126,7 +126,7 @@ fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
 /// 卡片宽度(字符)。
 pub const CARD_W: u16 = 36;
 /// 卡片内容高度(行)。
-pub const CARD_H: u16 = 3;
+pub const CARD_H: u16 = 5; // tag(1) + prompt(1) + cwd+tool(1) + meta+elapsed(1) + pad(1)
 /// 卡片间距(行/列)。
 pub const CARD_GAP: u16 = 1;
 /// 分区标题高度。
@@ -332,7 +332,70 @@ fn draw_section_header(
     );
 }
 
-/// 渲染单个 agent card(纯色块底色,无边框,竖条状态指示)。
+// ───────────────────────── 卡片模板组件 ─────────────────────────
+
+/// 从 handle 提取 8 位 tag: `term_fca57171-...` → `fca57171`。
+fn handle_tag(handle: &str) -> &str {
+    let rest = handle.strip_prefix("term_").unwrap_or(handle);
+    &rest[..8.min(rest.len())]
+}
+
+/// 格式化 elapsed: `now - lastOutputAt(ms)` → "2s"/"3m"/"1h"/"2d"。
+fn format_elapsed(last_output_at: Option<i64>) -> String {
+    let ms = match last_output_at {
+        Some(v) if v > 0 => v,
+        _ => return String::new(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let secs = ((now - ms) / 1000).max(0);
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
+}
+
+/// 卡片样式参数(从 agent+selected 派生)。
+struct CardStyle {
+    bg: Color,
+    bar_fg: Color,
+    tag_bg: Color,
+}
+
+impl CardStyle {
+    fn compute(agent: &crate::model::Agent, selected: bool, theme: &Theme) -> Self {
+        let cat = StatusCategory::from_agent(agent);
+        if selected {
+            Self { bg: Color::Rgb(49, 62, 96), bar_fg: theme.accent, tag_bg: theme.accent }
+        } else if agent.connected {
+            Self {
+                bg: Color::Rgb(40, 41, 58),
+                bar_fg: category_color(cat, theme),
+                tag_bg: category_color(cat, theme),
+            }
+        } else {
+            Self { bg: Color::Rgb(24, 24, 37), bar_fg: theme.muted, tag_bg: theme.muted }
+        }
+    }
+}
+
+/// 渲染单个 agent card(5 行模板布局)。
+///
+/// 布局:
+/// ```text
+/// tag_id                                  ← row 0: 8位 UUID tag(bg 仅覆盖 tag 宽度)
+/// ▌ prompt text truncated…               ← row 1: prompt(省略号截断)
+/// ▌ 📁 cwd  🔧 toolName                   ← row 2: cwd + 工具名
+/// ▌ ⠋ source · state (branch)    ⏱ 2s   ← row 3: 元信息 + elapsed
+///                                         ← row 4: 底部留白
+/// ```
 fn draw_agent_card(
     f: &mut Frame,
     agent: &crate::model::Agent,
@@ -343,59 +406,58 @@ fn draw_agent_card(
 ) {
     use unicode_width::UnicodeWidthStr;
 
-    // 底色 + 左侧竖条色
-    let (bg, bar_fg) = if selected {
-        (Color::Rgb(49, 62, 96), theme.accent)
-    } else if agent.connected {
-        let cat = StatusCategory::from_agent(agent);
-        (Color::Rgb(40, 41, 58), category_color(cat, theme))
-    } else {
-        (Color::Rgb(24, 24, 37), theme.muted)
-    };
-    let bg_style = Style::default().bg(bg);
-
-    f.render_widget(ratatui::widgets::Clear, area);
-
+    let cs = CardStyle::compute(agent, selected, theme);
+    let bg_style = Style::default().bg(cs.bg);
     let avail = area.width as usize;
     let indent = 2usize; // 竖条(1) + gap(1)
 
-    // ── line 1: 竖条 + handle + title ──
-    let handle_display = crate::render::truncate_width(&agent.handle, avail - indent - 1);
-    let handle_w = UnicodeWidthStr::width(handle_display.as_str());
-    let remaining = avail.saturating_sub(indent + handle_w);
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    // ── row 0: tag (底色仅覆盖 tag 宽度) ──
+    let tag = handle_tag(&agent.handle);
+    let tag_text = format!(" {tag} ");
+    let tag_w = UnicodeWidthStr::width(tag_text.as_str());
     let title_text = agent.title.as_deref().unwrap_or("").trim();
-    // 未读 badge: 如果有未读,在 title 之前插入红色计数
-    let badge_str = if unread > 0 {
-        format!(" ({unread})")
-    } else {
-        String::new()
-    };
+    let badge_str = if unread > 0 { format!(" ({unread})") } else { String::new() };
     let badge_w = UnicodeWidthStr::width(badge_str.as_str());
-    let title_max = remaining.saturating_sub(badge_w);
+    let title_max = avail.saturating_sub(tag_w + badge_w);
     let title_trunc = if !title_text.is_empty() && title_max > 2 {
         crate::render::truncate_width(title_text, title_max)
     } else {
         String::new()
     };
     let title_w = UnicodeWidthStr::width(title_trunc.as_str());
-    let pad_w = title_max.saturating_sub(title_w);
+    let tag_pad = title_max.saturating_sub(title_w);
 
-    let line1 = Line::from(vec![
-        Span::styled("▌", Style::default().fg(bar_fg).bg(bg)),
+    let mut row0_spans = vec![
+        Span::styled(tag_text, Style::default().bg(cs.tag_bg).fg(theme.bg).add_modifier(Modifier::BOLD)),
+        Span::styled(title_trunc, Style::default().fg(theme.muted)),
+        Span::styled(" ".repeat(tag_pad), Style::default()),
+    ];
+    if !badge_str.is_empty() {
+        row0_spans.push(Span::styled(
+            badge_str,
+            Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let row0 = Line::from(row0_spans);
+
+    // ── row 1: prompt (截断 + 省略号) ──
+    let prompt_text = agent.prompt.as_deref().unwrap_or("").trim();
+    let prompt_str = if prompt_text.is_empty() {
+        String::new()
+    } else {
+        crate::render::truncate_width(prompt_text, avail.saturating_sub(indent))
+    };
+    let prompt_w = UnicodeWidthStr::width(prompt_str.as_str());
+    let row1 = Line::from(vec![
+        Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(
-            handle_display,
-            Style::default()
-                .fg(if selected { theme.accent } else { theme.fg })
-                .bg(bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" ".repeat(pad_w), bg_style),
-        Span::styled(title_trunc, Style::default().fg(theme.muted).bg(bg)),
-        Span::styled(badge_str, Style::default().fg(theme.error).bg(bg).add_modifier(Modifier::BOLD)),
+        Span::styled(prompt_str, Style::default().fg(theme.fg).bg(cs.bg)),
+        Span::styled(" ".repeat(avail.saturating_sub(indent + prompt_w)), bg_style),
     ]);
 
-    // ── line 2: cwd ──
+    // ── row 2: 📁 cwd  🔧 toolName ──
     let home = std::env::var("HOME").unwrap_or_default();
     let cwd_display = if agent.cwd.is_empty() {
         "(global)".to_string()
@@ -404,42 +466,58 @@ fn draw_agent_card(
     } else {
         agent.cwd.clone()
     };
-    let cwd_max = avail.saturating_sub(indent + 2); // " " prefix
-    let cwd_str = crate::render::truncate_width(&cwd_display, cwd_max);
-    let cwd_w = UnicodeWidthStr::width(cwd_str.as_str());
-    let line2 = Line::from(vec![
-        Span::styled("▌", Style::default().fg(bar_fg).bg(bg)),
+    let tool = agent.tool_name.as_deref().unwrap_or("");
+    let tool_part = if !tool.is_empty() {
+        format!(" \u{1f527}{}", tool)
+    } else {
+        String::new()
+    };
+    let cwd_max = avail.saturating_sub(indent + 1 + UnicodeWidthStr::width(tool_part.as_str()));
+    let cwd_str = crate::render::truncate_width(&format!("\u{1f4c1}{}", cwd_display), cwd_max);
+    let content_w = UnicodeWidthStr::width(cwd_str.as_str()) + UnicodeWidthStr::width(tool_part.as_str());
+    let row2 = Line::from(vec![
+        Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(cwd_str, Style::default().fg(theme.muted).bg(bg)),
-        Span::styled(" ".repeat(avail.saturating_sub(indent + cwd_w)), bg_style),
+        Span::styled(cwd_str, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(tool_part, Style::default().fg(theme.accent).bg(cs.bg)),
+        Span::styled(" ".repeat(avail.saturating_sub(indent + content_w)), bg_style),
     ]);
 
-    // ── line 3: icon + source · state (branch) ──
+    // ── row 3: ⠋ source · state (branch)  ⏱ elapsed ──
     let cat = StatusCategory::from_agent(agent);
     let source = agent.source.as_deref().unwrap_or("-");
     let state = agent.state.as_deref().unwrap_or("-");
     let branch = if !agent.branch.is_empty() {
-        format!("  {}", agent.branch)
+        format!(" ({})", agent.branch)
     } else {
         String::new()
     };
-    let meta_max = avail.saturating_sub(indent + 2);
+    let elapsed = format_elapsed(agent.last_output_at);
+    let elapsed_part = if !elapsed.is_empty() {
+        format!(" \u{23f1}{}", elapsed)
+    } else {
+        String::new()
+    };
+    let elapsed_w = UnicodeWidthStr::width(elapsed_part.as_str());
+    let meta_max = avail.saturating_sub(indent + elapsed_w);
     let meta_str = crate::render::truncate_width(
-        &format!("{} {} · {}{}", cat.icon(), source, state, branch),
+        &format!("{} {} \u{00b7} {}{}", cat.icon(), source, state, branch),
         meta_max,
     );
     let meta_w = UnicodeWidthStr::width(meta_str.as_str());
-    let line3 = Line::from(vec![
-        Span::styled("▌", Style::default().fg(bar_fg).bg(bg)),
+    let meta_pad = meta_max.saturating_sub(meta_w);
+    let row3 = Line::from(vec![
+        Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(
-            meta_str,
-            Style::default().fg(theme.state_color(agent.state.as_deref())).bg(bg),
-        ),
-        Span::styled(" ".repeat(avail.saturating_sub(indent + meta_w)), bg_style),
+        Span::styled(meta_str, Style::default().fg(theme.state_color(agent.state.as_deref())).bg(cs.bg)),
+        Span::styled(" ".repeat(meta_pad), bg_style),
+        Span::styled(elapsed_part, Style::default().fg(theme.muted).bg(cs.bg)),
     ]);
 
-    let content = ratatui::widgets::Paragraph::new(vec![line1, line2, line3]);
+    // ── row 4: 底部留白 ──
+    let row4 = Line::from(vec![Span::styled(" ".repeat(avail), Style::default())]);
+
+    let content = ratatui::widgets::Paragraph::new(vec![row0, row1, row2, row3, row4]);
     f.render_widget(content, area);
 }
 

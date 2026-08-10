@@ -551,6 +551,8 @@ mod tests {
             source: None,
             state: None,
             last_output_at: None,
+            prompt: None,
+            tool_name: None,
         }];
 
         let cmds = update(

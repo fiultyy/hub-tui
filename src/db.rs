@@ -52,7 +52,9 @@ impl AgentRow {
             writable: false,
             source: self.source,
             state: self.state,
-            last_output_at: self.last_output_at,
+            prompt: None,
+            tool_name: None,
+            last_output_at: None,
         }
     }
 }
@@ -245,7 +247,7 @@ impl Db {
         priority: &str,
         thread_id: Option<&str>,
         payload: Option<&str>,
-        read: bool,
+        read: i64,
         created_at: &str,
         sequence: i64,
     ) {
@@ -307,7 +309,7 @@ impl Db {
                     priority: row.get(6)?,
                     thread_id: row.get(7)?,
                     payload: row.get(8)?,
-                    read: row.get::<_, i32>(9)? != 0,
+                    read: row.get::<_, i64>(9)?,
                     created_at: row.get(10)?,
                     sequence: row.get(11)?,
                 })
@@ -512,7 +514,7 @@ mod tests {
                 "normal",
                 None,
                 None,
-                false,
+                0,
                 "2026-01-01T00:00:00Z",
                 i,
             );
@@ -528,7 +530,7 @@ mod tests {
             "normal",
             None,
             None,
-            false,
+                0,
             "",
             0,
         );

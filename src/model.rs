@@ -30,7 +30,10 @@ pub struct Agent {
     pub source: Option<String>,
     /// join 后补充(来自 last-status.json)
     pub state: Option<String>,
-    /// PTY 最后输出时间(epoch ms)。来自 terminal list lastOutputAt。
+    /// join 后补充(来自 last-status.json)
+    pub prompt: Option<String>,
+    /// join 后补充(来自 last-status.json)
+    pub tool_name: Option<String>,
     #[serde(rename = "lastOutputAt", default)]
     pub last_output_at: Option<i64>,
 }
@@ -138,32 +141,44 @@ impl StatusCategory {
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct OrchMessage {
     pub id: String,
-    #[serde(rename = "fromHandle")]
     pub from_handle: String,
-    #[serde(rename = "toHandle")]
     pub to_handle: String,
     pub subject: String,
     pub body: String,
-    #[serde(rename = "msgType")]
+    #[serde(rename = "type", default = "default_msg_type")]
     pub msg_type: String,
     #[serde(default)]
     pub priority: String,
-    #[serde(rename = "threadId")]
+    #[serde(default)]
     pub thread_id: Option<String>,
     #[serde(default)]
     pub payload: Option<String>,
     #[serde(default)]
-    pub read: bool,
-    #[serde(rename = "createdAt")]
-    pub created_at: String,
+    pub read: i64,
     #[serde(default)]
     pub sequence: i64,
+    #[serde(default, rename = "created_at")]
+    pub created_at: String,
+}
+
+fn default_msg_type() -> String {
+    "status".to_string()
 }
 
 // ───────────────────────── Model ─────────────────────────
 
 /// inbox 消息上限。
 pub const MESSAGES_CAP: usize = 5000;
+
+/// last-status.json join 数据(通过 worktreeId join 到 Agent)。
+/// 用于 pending_status 缓存 + apply_status 合并。
+#[derive(Clone, Debug, Default)]
+pub struct StatusJoin {
+    pub source: String,
+    pub state: String,
+    pub prompt: Option<String>,
+    pub tool_name: Option<String>,
+}
 
 /// 纯数据投影。无 IO、无运行态、无渲染缓存。
 pub struct Model {
@@ -177,8 +192,7 @@ pub struct Model {
     pub generation: u64,
     /// pending status 缓存: AgentsLoaded 和 StatusUpdated 是异步的,
     /// 可能 StatusUpdated 先到但 directory 为空。缓存到这,AgentsLoaded 时合并。
-    pub pending_status: HashMap<String, (String, String)>,
-    /// handle → 未读消息数(来自 orchestration inbox)
+    pub pending_status: HashMap<String, StatusJoin>,
     pub unread_counts: HashMap<String, usize>,
 }
 
@@ -202,16 +216,20 @@ impl Model {
             .map(|a| (a.handle.clone(), a))
             .collect();
 
-        // 保留已有 agent 的 source/state,并合并 pending_status
+        // 保留已有 agent 的 join 数据,并合并 pending_status
         for (handle, incoming_agent) in incoming.iter_mut() {
             if let Some(old) = self.directory.get(handle) {
                 incoming_agent.source = old.source.clone();
                 incoming_agent.state = old.state.clone();
+                incoming_agent.prompt = old.prompt.clone();
+                incoming_agent.tool_name = old.tool_name.clone();
             }
             // 合并 pending_status(worktreeId join)
-            if let Some((source, state)) = self.pending_status.get(&incoming_agent.worktree_id) {
-                incoming_agent.source = Some(source.clone());
-                incoming_agent.state = Some(state.clone());
+            if let Some(sj) = self.pending_status.get(&incoming_agent.worktree_id) {
+                incoming_agent.source = Some(sj.source.clone());
+                incoming_agent.state = Some(sj.state.clone());
+                incoming_agent.prompt = sj.prompt.clone();
+                incoming_agent.tool_name = sj.tool_name.clone();
             }
         }
 
@@ -230,9 +248,19 @@ impl Model {
     /// 增量更新: last-status.json 结果。join key = worktreeId。
     /// 缓存到 pending_status,apply_agents 时合并(解决竞态)。
     pub fn apply_status(&mut self, statuses: Vec<crate::msg::AgentStatus>) {
-        let status_map: HashMap<String, (String, String)> = statuses
+        let status_map: HashMap<String, StatusJoin> = statuses
             .into_iter()
-            .map(|s| (s.worktree_id, (s.source, s.state)))
+            .map(|s| {
+                (
+                    s.worktree_id,
+                    StatusJoin {
+                        source: s.source,
+                        state: s.state,
+                        prompt: s.prompt,
+                        tool_name: s.tool_name,
+                    },
+                )
+            })
             .collect();
 
         // 缓存(供后续 apply_agents 合并)
@@ -240,9 +268,11 @@ impl Model {
 
         // 立即尝试 join 到现有 directory
         for agent in self.directory.values_mut() {
-            if let Some((source, state)) = status_map.get(&agent.worktree_id) {
-                agent.source = Some(source.clone());
-                agent.state = Some(state.clone());
+            if let Some(sj) = status_map.get(&agent.worktree_id) {
+                agent.source = Some(sj.source.clone());
+                agent.state = Some(sj.state.clone());
+                agent.prompt = sj.prompt.clone();
+                agent.tool_name = sj.tool_name.clone();
             }
         }
 

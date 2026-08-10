@@ -18,6 +18,8 @@ pub struct AgentStatus {
     pub state: String,
     #[serde(rename = "worktreeId")]
     pub worktree_id: String,
+    pub prompt: Option<String>,
+    pub tool_name: Option<String>,
 }
 
 /// Unix socket 查询请求(ADR-3)。
