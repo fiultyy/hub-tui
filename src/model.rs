@@ -48,6 +48,15 @@ pub struct Agent {
     pub last_output_at: Option<i64>,
 }
 
+/// Scheduled task for batch scheduler (transient, not persisted).
+#[derive(Debug, Clone)]
+pub struct ScheduledTask {
+    pub id: usize,
+    pub command: String,
+    pub fire_at: std::time::Instant,
+    pub repeat_interval: Option<std::time::Duration>,
+}
+
 /// 活跃判定阈值: lastOutputAt 在此时间内 = working(推理中)。
 const ACTIVE_THRESHOLD_MS: i64 = 10_000;
 
@@ -358,6 +367,10 @@ pub struct Model {
     pub watched: HashSet<String>,
     /// 命令模板: name → body with $N variables(持久化到 DB)。
     pub templates: HashMap<String, String>,
+    /// 定时任务队列(transient,重启清空)。
+    pub scheduled_tasks: Vec<ScheduledTask>,
+    /// 定时任务 ID 计数器。
+    pub next_sched_id: usize,
 }
 
 
@@ -387,6 +400,8 @@ impl Model {
             hotkeys: HashMap::new(),
             templates: HashMap::new(),
             watched: HashSet::new(),
+            scheduled_tasks: Vec::new(),
+            next_sched_id: 1,
         }
     }
 
@@ -563,6 +578,21 @@ impl Model {
     /// 启动时从 DB 加载模板(替换)。
     pub fn apply_templates(&mut self, templates: HashMap<String, String>) {
         self.templates = templates;
+    }
+
+    // ──── Scheduler(定时任务)────
+
+    /// 添加定时任务,返回分配的 ID。
+    pub fn add_scheduled_task(&mut self, command: String, fire_at: std::time::Instant, repeat: Option<std::time::Duration>) -> usize {
+        let id = self.next_sched_id;
+        self.next_sched_id = self.next_sched_id.wrapping_add(1);
+        self.scheduled_tasks.push(ScheduledTask { id, command, fire_at, repeat_interval: repeat });
+        id
+    }
+
+    /// 按 ID 移除定时任务。
+    pub fn remove_scheduled_task(&mut self, id: usize) {
+        self.scheduled_tasks.retain(|t| t.id != id);
     }
 
 

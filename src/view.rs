@@ -167,6 +167,11 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
         draw_template_overlay(f, model, shell, area, &theme);
     }
 
+    // Scheduler 浮层
+    if shell.sched_overlay_active {
+        draw_sched_overlay(f, model, shell, area, &theme);
+    }
+
     if shell.quickswitch_active {
         draw_quickswitch_overlay(f, model, shell, area, &theme);
     }
@@ -761,6 +766,7 @@ fn draw_groups(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &
                 String::new()
             };
             let preview = member_preview.join(", ") + &extra;
+
 
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -2657,6 +2663,80 @@ fn draw_template_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect
     f.render_widget(Clear, overlay_area);
 
     let title = " Templates (Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+// ───────────────────────── Scheduler 浮层 ─────────────────────────
+
+/// Scheduler overlay: shows scheduled tasks with countdown, 🔄 for repeating.
+fn draw_sched_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    let now = std::time::Instant::now();
+    let mut tasks = model.scheduled_tasks.clone();
+    tasks.sort_by_key(|t| t.fire_at);
+
+    let lines: Vec<Line> = if tasks.is_empty() {
+        vec![Line::from(Span::styled(
+            " No scheduled tasks. Use 'sched:<N> <command>' or 'sched:repeat:<N> <command>'.",
+            Style::default().fg(theme.muted),
+        ))]
+    } else {
+        tasks
+            .iter()
+            .map(|t| {
+                let remaining = t.fire_at.saturating_duration_since(now);
+                let secs = remaining.as_secs();
+                let countdown = if secs >= 3600 {
+                    format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+                } else if secs >= 60 {
+                    format!("{}m {}s", secs / 60, secs % 60)
+                } else {
+                    format!("{}s", secs)
+                };
+                let repeat_icon = if t.repeat_interval.is_some() { "🔄 " } else { "" };
+                let cmd_display: String = t.command.chars().take(50).collect();
+                Line::from(vec![
+                    Span::styled(format!(" #{} ", t.id), Style::default().fg(theme.muted)),
+                    Span::styled(format!("{:>8} ", countdown), Style::default().fg(theme.warn)),
+                    Span::styled(format!("{repeat_icon}{cmd_display}"), Style::default().fg(theme.fg)),
+                ])
+            })
+            .collect()
+    };
+
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(50);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Scheduled Tasks (Esc:close) ";
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))

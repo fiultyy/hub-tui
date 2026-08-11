@@ -208,6 +208,24 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
                 let event = shell.replay_queue.remove(0);
                 cmds.extend(handle_key(model, shell, event));
             }
+            // ── Scheduler: fire due tasks ──
+            let now = std::time::Instant::now();
+            let mut due: Vec<(usize, String, Option<std::time::Duration>)> = Vec::new();
+            for t in &model.scheduled_tasks {
+                if t.fire_at <= now {
+                    due.push((t.id, t.command.clone(), t.repeat_interval));
+                }
+            }
+            if !due.is_empty() {
+                let due_ids: Vec<usize> = due.iter().map(|(id, _, _)| *id).collect();
+                model.scheduled_tasks.retain(|t| !due_ids.contains(&t.id));
+                for (_id, cmd, interval) in &due {
+                    if let Some(dur) = interval {
+                        model.add_scheduled_task(cmd.clone(), now + *dur, Some(*dur));
+                    }
+                    cmds.extend(dispatch_input(model, shell, cmd.clone()));
+                }
+            }
             cmds
         }
 
@@ -473,7 +491,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.quickswitch_active {
         return handle_quickswitch_key(model, shell, k);
     }
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active || shell.template_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active || shell.template_overlay_active || shell.sched_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
     // Ctrl-W: toggle watch on current agent (non-insert mode)
@@ -1728,6 +1746,51 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![];
     }
 
+    // sched:N command / sched:repeat:N command / sched:list / sched:rm:ID
+    if let Some(rest) = buf.strip_prefix("sched:") {
+        if rest.trim() == "list" {
+            shell.sched_overlay_active = !shell.sched_overlay_active;
+            if shell.sched_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+        if let Some(id_str) = rest.strip_prefix("rm:") {
+            if let Ok(id) = id_str.trim().parse::<usize>() {
+                model.remove_scheduled_task(id);
+                shell.push_toast(format!("scheduled task {id} cancelled"));
+            } else {
+                shell.push_toast("sched:rm: usage: sched:rm:<ID>".into());
+            }
+            return vec![];
+        }
+        // sched:repeat:N command or sched:N command
+        let (secs_str, cmd) = if let Some(r) = rest.strip_prefix("repeat:") {
+            match r.split_once(' ') {
+                Some((s, c)) => (s, c),
+                None => return { shell.push_toast("sched:repeat: usage: sched:repeat:<N> <command>".into()); vec![] },
+            }
+        } else {
+            match rest.split_once(' ') {
+                Some((s, c)) => (s, c),
+                None => return { shell.push_toast("sched: usage: sched:<N> <command>".into()); vec![] },
+            }
+        };
+        let secs: u64 = match secs_str.trim().parse() {
+            Ok(n) if n > 0 => n,
+            _ => return { shell.push_toast("sched: N must be a positive number of seconds".into()); vec![] },
+        };
+        let cmd = cmd.trim().to_string();
+        if cmd.is_empty() {
+            shell.push_toast("sched: command cannot be empty".into());
+            return vec![];
+        }
+        let is_repeat = rest.starts_with("repeat:");
+        let fire_at = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        let interval = if is_repeat { Some(std::time::Duration::from_secs(secs)) } else { None };
+        let id = model.add_scheduled_task(cmd.clone(), fire_at, interval);
+        shell.push_toast(format!("⏰ scheduled #{id}: {cmd} ({}s{})", secs, if is_repeat { " repeat" } else { "" }));
+        return vec![];
+    }
+
     vec![]
 }
 
@@ -2210,6 +2273,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.hotkeys_overlay_active = false;
             shell.theme_overlay_active = false;
             shell.template_overlay_active = false;
+            shell.sched_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {

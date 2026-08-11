@@ -765,7 +765,7 @@ pub const INPUT_PREFIXES: &[&str] = &[
     "broadcast:", "create:", "config:", "reply:", "batch:", "tag:",
     "tagged:", "snip:", "run:", "rule:", "macro:", "view:", "note:",
     "export:", "import:", "alias:", "hotkey:", "theme:", "watch:",
-    "chain:", "tpl:",
+    "chain:", "tpl:", "sched:",
 ];
 
 /// Prefixes where the first argument is an agent handle.
