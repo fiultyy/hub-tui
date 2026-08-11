@@ -421,7 +421,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                         v.sort();
                         v
                     }).unwrap_or_default();
-                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread, model.notes.contains_key(&agent.handle), model.watched.contains(&agent.handle));
+                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread, model.notes.contains_key(&agent.handle), model.watched.contains(&agent.handle), shell.spinner_frame);
                 }
             }
         }
@@ -552,6 +552,34 @@ fn preview_tail(preview: Option<&str>) -> String {
         .to_string()
 }
 
+/// Extract real cwd from agent data. Tries title (shell prompt pattern),
+/// falls back to worktreePath (agent.cwd).
+fn extract_real_cwd(agent: &crate::model::Agent) -> String {
+    // Shell terminals have title like "yy@host: ~/path" — extract the path
+    if let Some(title) = agent.title.as_deref() {
+        if let Some(idx) = title.rfind(": ") {
+            let path_part = &title[idx + 2..].trim();
+            if !path_part.is_empty() && (path_part.starts_with('~') || path_part.starts_with('/')) {
+                return expand_tilde(path_part);
+            }
+        }
+    }
+    agent.cwd.clone()
+}
+
+/// Expand ~ to $HOME for display.
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            return format!("{}{}", home, &path[1..]);
+        }
+    } else if path == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+    }
+    path.to_string()
+}
+
 /// Tail-anchor a path: keep the last N segments, prefix with … if truncated.
 fn cwd_tail(path: &str, max_w: usize) -> String {
     use unicode_width::UnicodeWidthStr;
@@ -641,6 +669,7 @@ fn draw_agent_card(
     unread: usize,
     has_note: bool,
     watched: bool,
+    spinner_frame: usize,
 ) {
     use unicode_width::UnicodeWidthStr;
 
@@ -764,28 +793,37 @@ fn draw_agent_card(
         Span::styled(" ".repeat(avail.saturating_sub(indent + tool_label_w + input_w)), bg_style),
     ]);
 
-    // ── row 5: status line (icon + label + elapsed · cwd_tail) ──
+    // ── row 7: status line (spinner/icon + label + 响应:elapsed · cwd_tail) ──
     let cat = StatusCategory::from_agent(agent);
     let status_label = cat.label();
     let elapsed = format_elapsed(agent.last_output_at);
     let state_color = theme.state_color(agent.state.as_deref());
     let elapsed_display = if elapsed.is_empty() { "-".to_string() } else { elapsed };
+    let elapsed_str = format!("last:{}", elapsed_display); // last:Ns
     let sep = " \u{00b7} "; // ·
+    // Animated spinner for Working state, static icon otherwise
+    let icon_str: String = if cat == StatusCategory::Working {
+        spinner_char(spinner_frame).to_string()
+    } else {
+        cat.icon().to_string()
+    };
+    let icon_w = UnicodeWidthStr::width(icon_str.as_str());
     let label_w = UnicodeWidthStr::width(status_label);
-    let elapsed_w = UnicodeWidthStr::width(elapsed_display.as_str());
+    let elapsed_w = UnicodeWidthStr::width(elapsed_str.as_str());
     let sep_w = UnicodeWidthStr::width(sep);
-    let fixed_w = indent + 1 + 1 + label_w + 1 + elapsed_w + sep_w; // bar+gap + icon + gap + label + gap + elapsed + sep
+    let fixed_w = indent + icon_w + 1 + label_w + 1 + elapsed_w + sep_w;
     let cwd_max = avail.saturating_sub(fixed_w);
-    let cwd_display = cwd_tail(&agent.cwd, cwd_max);
+    let real_cwd = extract_real_cwd(agent);
+    let cwd_display = cwd_tail(&real_cwd, cwd_max);
     let cwd_w = UnicodeWidthStr::width(cwd_display.as_str());
     let status_row = Line::from(vec![
         bar_span,
         gap_span,
-        Span::styled(cat.icon(), Style::default().fg(state_color).bg(cs.bg)),
+        Span::styled(icon_str, Style::default().fg(state_color).bg(cs.bg)),
         Span::styled(" ", bg_style),
         Span::styled(status_label, Style::default().fg(state_color).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(elapsed_display, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(elapsed_str, Style::default().fg(theme.muted).bg(cs.bg)),
         Span::styled(sep, Style::default().fg(theme.muted).bg(cs.bg)),
         Span::styled(cwd_display, Style::default().fg(theme.muted).bg(cs.bg)),
         Span::styled(" ".repeat(avail.saturating_sub(fixed_w + cwd_w)), bg_style),
