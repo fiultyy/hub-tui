@@ -44,6 +44,10 @@ pub enum AppMsg {
     Key(KeyEvent),
     /// 鼠标左键点击(终端坐标)。
     MouseLeftClick { x: u16, y: u16 },
+    /// 鼠标滚轮上滚。
+    MouseScrollUp,
+    /// 鼠标滚轮下滚。
+    MouseScrollDown,
     /// 终端尺寸变化。
     Resize { width: u16, height: u16 },
     /// 定时 tick(驱动 spinner/toast 超时/状态刷新)。

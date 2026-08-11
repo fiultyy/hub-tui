@@ -191,6 +191,14 @@ fn run_loop(
                         svc.execute(cmds);
                     }
                 }
+                Event::Mouse(m) if m.kind == crossterm::event::MouseEventKind::ScrollUp => {
+                    let cmds = update::update(&mut model.write(), shell, AppMsg::MouseScrollUp);
+                    svc.execute(cmds);
+                }
+                Event::Mouse(m) if m.kind == crossterm::event::MouseEventKind::ScrollDown => {
+                    let cmds = update::update(&mut model.write(), shell, AppMsg::MouseScrollDown);
+                    svc.execute(cmds);
+                }
                 Event::Resize(w, h) => {
                     let cmds = update::update(&mut model.write(), shell, AppMsg::Resize { width: w, height: h });
                     svc.execute(cmds);

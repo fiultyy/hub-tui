@@ -182,6 +182,21 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![]
         }
 
+        // ──── 鼠标滚轮(移动 cursor) ────
+        AppMsg::MouseScrollUp => {
+            if shell.cursor > 0 {
+                shell.cursor -= 1;
+            }
+            vec![]
+        }
+        AppMsg::MouseScrollDown => {
+            let len = list_len(model, shell);
+            if !len.is_empty() && shell.cursor + 1 < len.len() {
+                shell.cursor += 1;
+            }
+            vec![]
+        }
+
         // ──── 终端尺寸变化 ────
         AppMsg::Resize { width, height } => {
             shell.size = (width, height);
