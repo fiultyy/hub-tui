@@ -266,6 +266,35 @@ fn last_status_path() -> std::path::PathBuf {
         .join("last-status.json")
 }
 
+/// Write state="working" to last-status.json for hub-tui's paneKey.
+/// Prevents Orca from classifying hub-tui as idle and injecting
+/// "You have N messages" + \r into the PTY.
+pub fn write_status_working(pane_key: &str, worktree_id: &str, tab_id: &str) {
+    let path = last_status_path();
+    // Read existing JSON, merge our entry, write back.
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut json: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|_| {
+        serde_json::json!({"version": 2, "entries": {}})
+    });
+    let entries = json.get_mut("entries").and_then(|e| e.as_object_mut());
+    if let Some(entries) = entries {
+        entries.insert(pane_key.to_string(), serde_json::json!({
+            "paneKey": pane_key,
+            "source": "omp",
+            "tabId": tab_id,
+            "worktreeId": worktree_id,
+            "connectionId": null,
+            "hookEventName": "tool_execution_end",
+            "payload": {
+                "state": "working",
+                "prompt": "",
+                "tool": "hub-tui",
+            }
+        }));
+    }
+    let _ = std::fs::write(&path, serde_json::to_string(&json).unwrap_or_default());
+}
+
 fn dirs_home() -> std::path::PathBuf {
     std::env::var("HOME")
         .map(std::path::PathBuf::from)

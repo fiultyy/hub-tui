@@ -239,6 +239,12 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             let mut cmds = Vec::new();
             // 每次 tick 都刷新 status(轻量 stat)
             cmds.push(Cmd::RefreshStatus);
+            // Write state="working" to last-status.json to prevent Orca
+            // from injecting "You have N messages" into hub-tui's PTY.
+            let self_h = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+            if let Some(agent) = model.directory.get(&self_h) {
+                crate::transport::write_status_working(&agent.pane_key, &agent.worktree_id, &agent.tab_id);
+            }
             // 周期性刷新 agents(可配置间隔)
             if should_refresh_agents(model, shell) {
                 cmds.push(Cmd::RefreshAgents);
@@ -1124,12 +1130,13 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return all_cmds;
     }
     if let Some((to, rest)) = buf.strip_prefix("to:").and_then(|s| s.split_once(' ')) {
-        let subject = rest.trim().to_string();
-        if subject.is_empty() {
+        let msg = rest.trim().to_string();
+        if msg.is_empty() {
             shell.push_toast("to: message cannot be empty".into());
             return vec![];
         }
-        return vec![Cmd::OrchestrationSend { to: to.to_string(), subject, body: String::new() }];
+        // 直发: 直接写目标 PTY, 不过 orchestration 消息系统
+        return vec![Cmd::TerminalSend { handle: to.to_string(), text: msg }];
     }
 
     // 解析 "pty:handle text" 格式(PTY 直接注入)
