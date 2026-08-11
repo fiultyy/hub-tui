@@ -362,17 +362,18 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![note_event(model, EventSeverity::Error, EventCategory::Message, "system", format!("Ack failed: {e}"))]
         }
 
-        AppMsg::MessagesDrained(msgs) => {
+        AppMsg::MessagesDrained(all_msgs) => {
+            // hub-tui 是特殊 agent — Messages tab 只显示 hub-tui 发出或收到的消息
+            let self_h = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+            let msgs: Vec<OrchMessage> = all_msgs.into_iter()
+                .filter(|m| m.from_handle == self_h || m.to_handle == self_h)
+                .collect();
             let persist = msgs.clone();
             let new_ids = model.apply_messages(msgs);
             let n = new_ids.len();
             let mut cmds = vec![Cmd::PersistMessages(persist)];
             if n > 0 {
-                cmds.push(note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Received {n} messages")));
-                let ctx = crate::model::CheckContext { is_new_message: true, ..Default::default() };
-                for toast in crate::model::check_alert_rules(&model.alert_rules, &ctx) {
-                    shell.push_toast(toast);
-                }
+                cmds.push(note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Sent/received {n} messages")));
             }
             cmds
         }
@@ -924,13 +925,14 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
                 vec![]
             }
             Tab::Messages => {
-                // Enter: 进入 reply 模式, 预填 reply:<msg_id>
+                // hub-tui 单向发送: Enter 预填 to:<cursor_msg_from> 进入输入模式
                 let msgs: Vec<_> = model.messages.iter().rev().collect();
                 if let Some(msg) = msgs.get(shell.cursor) {
-                    let id = &msg.id;
+                    // 默认回复给该消息的发送者
+                    let to = &msg.from_handle;
                     shell.insert_mode = true;
                     shell.focus = FocusTarget::Input;
-                    shell.input_buf = format!("reply:{id} ");
+                    shell.input_buf = format!("to:{to} ");
                 }
                 vec![]
             }

@@ -1173,7 +1173,7 @@ fn status_hint(shell: &Shell) -> String {
     }
     match shell.tab {
         Tab::Directory => " j/k:nav i:input s:switch p:pty w:worktree G:group @:pin /:filter ?:help ".to_string(),
-        Tab::Messages => " j/k:nav Enter:reply /:filter g:next ?:help ".to_string(),
+        Tab::Messages => " j/k:nav Enter:compose /:filter g:next ?:help ".to_string(),
     }
 }
 
@@ -2925,7 +2925,7 @@ fn draw_group_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, t
     let cursor = shell.group_overlay_cursor.min(list_len.saturating_sub(1));
 
     let overlay_h = (list_len as u16 + 5).min(area.height.saturating_sub(4));
-    let overlay_w = 60.min(area.width);
+    let overlay_w = (area.width * 4 / 5).max(60);
     let x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
     let y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
     let oa = Rect::new(x, y, overlay_w, overlay_h);
@@ -2952,13 +2952,13 @@ fn draw_group_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, t
         let mark = if is_in { "\u{25cf}" } else { " " }; // ● = joined
         let mark_color = if is_in { theme.success } else { theme.muted };
 
-        // 成员预览: 前 3 个 tag
+        // 成员预览: 前 5 个 tag
         let preview: String = model.groups.get(gname).map(|s| {
             let tags: Vec<String> = s.iter()
                 .map(|h| handle_tag(h).to_string())
-                .take(3)
+                .take(5)
                 .collect();
-            let extra = if s.len() > 3 { format!(" +{}", s.len() - 3) } else { String::new() };
+            let extra = if s.len() > 5 { format!(" +{}", s.len() - 5) } else { String::new() };
             format!("{tags:?}{}", extra)
         }).unwrap_or_default();
 
@@ -2968,10 +2968,12 @@ fn draw_group_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, t
         } else {
             Style::default().fg(theme.fg)
         };
+        // gname field width scales with overlay
+        let name_w = (inner.width as usize / 3).max(12);
         lines.push(Line::from(vec![
             Span::styled(format!(" {} ", mark), Style::default().fg(mark_color)),
-            Span::styled(format!("{:<16}", gname), style),
-            Span::styled(format!(" ({}) ", members), Style::default().fg(theme.muted)),
+            Span::styled(format!("{:<width$}", gname, width=name_w), style),
+            Span::styled(format!(" ({})  ", members), Style::default().fg(theme.muted)),
             Span::styled(preview, Style::default().fg(theme.muted)),
         ]));
     }
