@@ -21,11 +21,3 @@ pub fn bordered_block<'a>(title: &'a str, focused: bool, theme: &Theme) -> Block
         }))
 }
 
-/// 连接指示符(●/○)。
-pub fn conn_indicator(connected: bool, theme: &Theme) -> Span<'static> {
-    if connected {
-        Span::styled("●".to_string(), Style::default().fg(theme.success))
-    } else {
-        Span::styled("○".to_string(), Style::default().fg(theme.muted))
-    }
-}

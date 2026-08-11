@@ -242,6 +242,7 @@ impl EventCategory {
 
 /// 活动日志事件。纯数据, 无 IO。
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // id 用于 DB schema 对齐(自增 PK), 运行时不读
 pub struct Event {
     /// DB 自增 id; 0 = 未持久化。
     pub id: i64,
@@ -263,6 +264,7 @@ pub fn now_ms() -> i64 {
 }
 /// 输入栏历史条目。
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // id 用于 DB schema 对齐(自增 PK), 运行时不读
 pub struct HistoryEntry {
     pub id: i64,
     pub timestamp_ms: i64,
@@ -815,6 +817,7 @@ impl Model {
 
 /// worktree ps 条目(对齐 orca-ide worktree ps --json 输出)。
 #[derive(Clone, Debug, serde::Deserialize)]
+#[allow(dead_code)] // status 对齐 orca-ide JSON 输出, 渲染时未使用
 pub struct WorktreePsEntry {
     #[serde(rename = "worktreePath", default)]
     pub path: String,
@@ -836,6 +839,7 @@ pub struct OrchSnapshot {
 
 /// orchestration run 条目。
 #[derive(Clone, Debug, serde::Deserialize)]
+#[allow(dead_code)] // id 对齐 orca-ide JSON, 渲染只用 title/status
 pub struct OrchRunEntry {
     #[serde(default)]
     pub id: String,
@@ -847,6 +851,7 @@ pub struct OrchRunEntry {
 
 /// orchestration task 条目。
 #[derive(Clone, Debug, serde::Deserialize)]
+#[allow(dead_code)] // id 对齐 orca-ide JSON, 渲染只用 title/status
 pub struct OrchTaskEntry {
     #[serde(default)]
     pub id: String,
@@ -860,6 +865,7 @@ pub struct OrchTaskEntry {
 
 /// orchestration gate 条目。
 #[derive(Clone, Debug, serde::Deserialize)]
+#[allow(dead_code)] // id 对齐 orca-ide JSON, 渲染只用 title/status
 pub struct OrchGateEntry {
     #[serde(default)]
     pub id: String,
@@ -1194,14 +1200,11 @@ pub struct ModelSnapshot {
     pub event_total: usize,
     /// 3 槽位: [("Info",n), ("Warn",n), ("Error",n)]。
     pub event_by_severity: [(String, usize); 3],
-    /// EventCategory::as_str() → 计数。
-    pub event_by_category: HashMap<String, usize>,
     pub group_count: usize,
     pub pinned_count: usize,
     pub history_count: usize,
     /// 最近 60 秒事件数(活跃度指标)。
     pub event_recent_60s: usize,
-    pub computed_at_ms: i64,
     /// Top-5 tags by agent count (Dashboard 标签分布)。
     pub tag_counts: Vec<(String, usize)>,
     /// Active alert rule count。
@@ -1210,8 +1213,7 @@ pub struct ModelSnapshot {
 
 /// 计算 Dashboard 快照。纯计算, 无 IO。
 pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
-    let computed_at_ms = now_ms();
-    let cutoff_60s = computed_at_ms - 60_000;
+    let cutoff_60s = now_ms() - 60_000;
 
     let mut status_counts: [(StatusCategory, usize); 6] = [
         (StatusCategory::Working, 0),
@@ -1237,7 +1239,6 @@ pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
     let message_unread: usize = 0;
 
     let mut sev_counts: [usize; 3] = [0, 0, 0];
-    let mut event_by_category: HashMap<String, usize> = HashMap::new();
     let mut event_recent_60s: usize = 0;
     for ev in &model.events {
         let sev_idx = match ev.severity {
@@ -1246,7 +1247,7 @@ pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
             EventSeverity::Error => 2,
         };
         sev_counts[sev_idx] += 1;
-        *event_by_category.entry(ev.category.as_str().to_string()).or_insert(0) += 1;
+
         if ev.timestamp_ms > cutoff_60s {
             event_recent_60s += 1;
         }
@@ -1275,14 +1276,12 @@ pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
             ("Warn".to_string(), sev_counts[1]),
             ("Error".to_string(), sev_counts[2]),
         ],
-        event_by_category,
         group_count: model.groups.len(),
         tag_counts,
         pinned_count: pinned_in_dir,
         history_count: model.history.len(),
         alert_rule_count: model.alert_rules.len(),
         event_recent_60s,
-        computed_at_ms,
     }
 }
 

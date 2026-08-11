@@ -8,9 +8,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::msg::AppMsg;
-use crate::model::{directory_sorted_with_mode, SortMode, Agent, Model, EventCategory, EventSeverity, StatusCategory, ViewSnapshot};
+use crate::model::{directory_sorted_with_mode, Agent, Model, EventCategory, EventSeverity, StatusCategory, ViewSnapshot};
 use crate::shell::{FocusTarget, Shell, Tab};
-use crate::view::{directory_layout, directory_scroll, LayoutItem};
+use crate::view::{directory_layout, LayoutItem};
 
 // ───────────────────────── Cmd(意图声明, service 执行) ─────────────────────────
 
@@ -1004,6 +1004,11 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         let msg = rest.trim().to_string();
         if msg.is_empty() {
             shell.push_toast("to: message cannot be empty".into());
+            return vec![];
+        }
+        // 验证 handle 存在于 directory(避免拼写错误导致静默失败)
+        if !model.directory.contains_key(to) {
+            shell.push_toast(format!("to: unknown handle '{}'", to));
             return vec![];
         }
         // 直发: 直接写目标 PTY, 不过 orchestration 消息系统
@@ -2411,25 +2416,20 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
 /// Directory tab: 按 directory_sorted_handles 排序(worktreePath 分组 + 最近活跃)。
 #[must_use]
 fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String]> {
-    match shell.tab {
-        Tab::Directory => {
-            let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
-            if shell.filter_active {
-                let q = shell.filter_query.as_deref().unwrap_or("");
-                let filtered = crate::model::directory_filter_handles(
-                    &sorted,
-                    &model.directory,
-                    q,
-                    &model.tags,
-                );
-                let filtered = crate::model::apply_focus_filter(filtered, shell.focus_mode, &shell.selected_set);
-                std::borrow::Cow::Owned(filtered)
-            } else {
-                let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
-                std::borrow::Cow::Owned(sorted)
-            }
-        }
-        _ => std::borrow::Cow::Owned(vec![]),
+    let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+    if shell.filter_active {
+        let q = shell.filter_query.as_deref().unwrap_or("");
+        let filtered = crate::model::directory_filter_handles(
+            &sorted,
+            &model.directory,
+            q,
+            &model.tags,
+        );
+        let filtered = crate::model::apply_focus_filter(filtered, shell.focus_mode, &shell.selected_set);
+        std::borrow::Cow::Owned(filtered)
+    } else {
+        let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
+        std::borrow::Cow::Owned(sorted)
     }
 }
 
@@ -2654,7 +2654,6 @@ mod tests {
 
     #[test]
     fn update_toast_drain() {
-        let mut model = Model::new();
         let mut shell = Shell::new();
         shell.push_toast("old".to_string());
         assert_eq!(shell.toasts.len(), 1);
@@ -2871,6 +2870,16 @@ mod tests {
     #[test]
     fn history_record_on_enter() {
         let mut model = Model::new();
+        // seed agent so to:h1 passes handle validation
+        let agent = crate::model::Agent {
+            handle: "h1".to_string(), pty_id: None, cwd: "/tmp".to_string(),
+            worktree_id: String::new(), branch: String::new(), tab_id: String::new(),
+            leaf_id: String::new(), pane_key: String::new(), title: None,
+            connected: true, writable: true, source: Some("claude".to_string()),
+            state: Some("working".to_string()), prompt: None, tool_name: None,
+            tool_input: None, last_assistant_msg: None, preview: None, last_output_at: None,
+        };
+        model.directory.insert("h1".to_string(), agent);
         let mut shell = Shell::new();
         shell.insert_mode = true;
         shell.input_buf = "to:h1 hello".to_string();
@@ -2896,7 +2905,7 @@ mod tests {
         let mut model = Model::new();
         let mut shell = Shell::new();
         // seed agent
-        let mut agent = crate::model::Agent {
+        let agent = crate::model::Agent {
             handle: "term_abc".to_string(), pty_id: None, cwd: "/tmp".to_string(),
             worktree_id: String::new(), branch: String::new(), tab_id: String::new(),
             leaf_id: String::new(), pane_key: String::new(), title: None,
@@ -2911,7 +2920,7 @@ mod tests {
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('b'))));
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('c'))));
         // Enter → jump
-        let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
+        let _cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Enter)));
         assert!(!shell.search_active);
         assert_eq!(shell.tab, Tab::Directory);
     }

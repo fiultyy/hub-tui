@@ -54,7 +54,6 @@ impl Service {
     /// Create service with SQLite persistence. Returns (Service, DbBootstrap).
     /// DbBootstrap contains cached data loaded from DB for fast startup.
     pub fn new(tx: SyncSender<AppMsg>) -> (Self, DbBootstrap) {
-        let initial_mtime = transport::last_status_mtime();
 
         let db = Db::open(None);
         let bootstrap = db.as_ref().map_or_else(
@@ -219,9 +218,7 @@ impl Service {
                 }
                 crate::update::Cmd::PersistAlertRule(rule) => {
                     if let Some(db) = &self.db {
-                        let id = db.upsert_alert_rule(rule.rule_type.as_str(), &rule.value);
-                        // 更新内存中的 id(DB 分配的)
-                        // NOTE: 这里无法更新 model, 但 id=0 的规则仍能匹配(check 不依赖 id)
+                        db.upsert_alert_rule(rule.rule_type.as_str(), &rule.value);
                     }
                 }
                 crate::update::Cmd::RemoveAlertRule { id } => {

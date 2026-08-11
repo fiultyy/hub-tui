@@ -11,6 +11,7 @@ use crate::model::Agent;
 
 /// Agent 运行态(来自 last-status.json,通过 tabId:leafId join 到 Agent)。
 #[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)] // worktree_id 对齐 last-status.json, join 用 paneKey
 pub struct AgentStatus {
     #[serde(rename = "paneKey")]
     pub pane_key: String,

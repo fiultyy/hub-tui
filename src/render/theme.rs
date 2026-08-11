@@ -2,7 +2,7 @@
 //!
 //! 所有渲染模块共享此 palette,保证色阶一致。
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Color;
 
 /// 统一主题。Copy + Clone,值传递,无生命周期。
 #[derive(Clone, Copy, Debug)]
@@ -131,10 +131,6 @@ impl Theme {
         }
     }
 
-    /// 状态 Style(带 bold)。
-    pub fn state_style(&self, state: Option<&str>) -> Style {
-        Style::default().fg(self.state_color(state)).add_modifier(Modifier::BOLD)
-    }
 }
 
 /// 解析颜色字符串: hex (#RRGGBB) 或命名色 (red/green/blue/etc)。

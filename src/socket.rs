@@ -20,36 +20,25 @@ const SOCKET_PATH: &str = "/tmp/orca-hub.sock";
 
 // ───────────────────────── SocketServer ─────────────────────────
 
-/// Unix socket 服务端句柄。持有 accept 线程的 JoinHandle。
-/// Drop 时清理 socket 文件。
-pub struct SocketServer {
-    handle: Option<thread::JoinHandle<()>>,
-}
+/// Unix socket 服务端句柄(RAII guard)。
+/// Drop 时清理 socket 文件。accept 线程 detached。
+pub struct SocketServer;
 
 impl SocketServer {
     /// 启动 socket 服务: 清理残留 → bind → spawn accept 线程。
-    ///
-    /// `model`: `Arc<RwLock<Model>>` 共享引用,连接处理线程通过读锁查询群组数据。
-    /// `db`: `Arc<Db>` 用于持久化群组变更(可为 None)。
     pub fn start(model: Arc<RwLock<Model>>, db: Db) -> Self {
         // ADR-3: 启动时 remove_file 清理残留
         let _ = std::fs::remove_file(SOCKET_PATH);
         let listener = UnixListener::bind(SOCKET_PATH).expect("bind hub socket");
 
-        let handle = thread::spawn(move || {
+        let _handle = thread::spawn(move || {
             accept_loop(listener, model, db);
         });
 
-        Self {
-            handle: Some(handle),
-        }
-    }
-
-    /// 关闭: 清理 socket 文件 + drop JoinHandle(detach 线程)。
-    pub fn shutdown(self) {
-        let _ = std::fs::remove_file(SOCKET_PATH);
+        Self
     }
 }
+
 
 impl Drop for SocketServer {
     fn drop(&mut self) {
@@ -221,7 +210,7 @@ fn cmd_broadcast(req: &crate::msg::SocketReq, model: &Arc<RwLock<Model>>) -> Soc
     }
 
     // 逐个发送, 收集结果
-    let subject = format!("[{name}] broadcast");
+
     let mut ok_count = 0usize;
     let mut fail_count = 0usize;
     for handle in &members {

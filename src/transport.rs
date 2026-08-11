@@ -203,6 +203,7 @@ pub fn terminal_read_output(handle: &str) -> Result<String, String> {
 
 /// terminal create 结果: `orca-ide terminal create --json` 返回 handle 等字段。
 #[derive(serde::Deserialize)]
+#[allow(dead_code)] // worktree_id 对齐 orca-ide JSON, 只用 handle/title
 pub struct CreateTerminalResult {
     /// 新终端 handle(用于后续 send/switch/close 等操作)。
     pub handle: String,

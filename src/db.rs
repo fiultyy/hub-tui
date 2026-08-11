@@ -58,7 +58,7 @@ impl AgentRow {
             tool_input: None,
             last_assistant_msg: None,
             preview: None,
-            last_output_at: None,
+            last_output_at: self.last_output_at,
         }
     }
 }
@@ -969,32 +969,6 @@ impl Db {
         map
     }
 
-    // ──── Export/Import ────
-
-    /// 清除所有用户数据(导入前 replace-all 策略)。
-    /// 保留 config 表的 db_version 和 messages/agent_activity/events/input_history(缓存数据)。
-    pub fn clear_user_data(&self) {
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let _ = conn.execute_batch("
-            DELETE FROM groups;
-            DELETE FROM group_members;
-            DELETE FROM pinned_agents;
-            DELETE FROM agent_tags;
-            DELETE FROM snippets;
-            DELETE FROM alert_rules;
-            DELETE FROM macros;
-            DELETE FROM saved_views;
-            DELETE FROM agent_notes;
-            DELETE FROM aliases;
-            DELETE FROM hotkeys;
-            DELETE FROM watched_agents;
-            DELETE FROM templates;
-            DELETE FROM config WHERE key != 'db_version';
-        ");
-    }
 
     /// Execute a closure inside a SQLite transaction.
     /// The mutex is held for the entire duration, preventing interleaved writes.

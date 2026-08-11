@@ -119,7 +119,7 @@ fn main() -> io::Result<()> {
         svc.execute(startup_cmds);
     }
 
-    run_loop(&mut term, &rx, &model, &mut shell, &mut svc, &tx)
+    run_loop(&mut term, &rx, &model, &mut shell, &mut svc)
 }
 
 /// RAII 终端恢复守卫。Drop 时无条件执行 best-effort 清理:
@@ -142,7 +142,6 @@ fn run_loop(
     model: &Arc<RwLock<Model>>,
     shell: &mut Shell,
     svc: &mut Service,
-    tx: &std::sync::mpsc::SyncSender<AppMsg>,
 ) -> io::Result<()> {
     let mut quit = false;
     let mut last_written_gen: u64 = 0;
@@ -223,7 +222,6 @@ fn run_loop(
 
 /// ADR-6: 写 hub-directory.json(agent 查 handle 发现用)。只在 generation 变化时调用。
 fn write_directory(model: &Model) {
-    use std::io::Write;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let path = format!("{}/.orca/hub-directory.json", home);
     let agents: Vec<&model::Agent> = model.directory.values().collect();

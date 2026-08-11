@@ -11,10 +11,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::Frame;
 
-use crate::model::{directory_sorted_with_mode, AgentMetrics, EventCategory, EventSeverity, Model, StatusCategory};
+use crate::model::{directory_sorted_with_mode, AgentMetrics, EventSeverity, Model, StatusCategory};
 use crate::render::blocks;
 use crate::render::theme::Theme;
 use crate::shell::{ConnState, Shell, Tab};
@@ -124,7 +124,7 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     }
     // Agent Note 浮层
     if shell.note_overlay_active {
-        draw_note_overlay(f, model, shell, area, &theme);
+        draw_note_overlay(f, shell, area, &theme);
     }
     // Quick Actions 浮层(o 键激活)
     if shell.quick_actions_active {
@@ -422,13 +422,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                     let is_selected = *sorted_idx == shell.cursor;
                     let max_h = (scroll_y + inner.height).saturating_sub(entry.y);
                     let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h.min(max_h) };
-                    let unread: usize = 0;
-                    let tags: Vec<String> = model.tags.get(&agent.handle).map(|s| {
-                        let mut v: Vec<String> = s.iter().cloned().collect();
-                        v.sort();
-                        v
-                    }).unwrap_or_default();
-                    draw_agent_card(f, agent, card_area, theme, is_selected, false, model.pinned.contains(&agent.handle), &tags, unread, model.notes.contains_key(&agent.handle), model.watched.contains(&agent.handle), shell.spinner_frame);
+                    draw_agent_card(f, agent, card_area, theme, is_selected, shell.spinner_frame);
                 }
             }
         }
@@ -682,12 +676,6 @@ fn draw_agent_card(
     area: Rect,
     theme: &Theme,
     selected: bool,
-    shell_selected: bool,
-    pinned: bool,
-    tags: &[String],
-    unread: usize,
-    has_note: bool,
-    watched: bool,
     spinner_frame: usize,
 ) {
     use unicode_width::UnicodeWidthStr;
@@ -1007,7 +995,6 @@ fn spinner_char(frame: usize) -> char {
 
 /// 命令面板: 居中浮层 + 输入框 + 过滤列表 + 选择高亮。
 fn draw_command_palette(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
-    use unicode_width::UnicodeWidthStr;
 
     let commands = crate::command::filter_commands(&shell.palette_query);
     let list_h = commands.len().min(10) as u16;
@@ -2203,7 +2190,7 @@ fn draw_metrics_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect,
 // ───────────────────────── Agent Note 浮层 ─────────────────────────
 
 /// Agent Note 编辑浮层: 显示/编辑指定 agent 的备注文本。
-fn draw_note_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+fn draw_note_overlay(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     use ratatui::widgets::{Borders, Clear};
 
     // Get the handle we're viewing
@@ -2842,9 +2829,4 @@ mod tests {
         assert_eq!(crate::render::truncate_width("hello", 0), "");
     }
 
-    #[test]
-    fn test_pad_left_ascii() {
-        assert_eq!(crate::render::pad_left("ab", 5), "ab   ");
-        assert_eq!(crate::render::pad_left("abcdef", 3), "ab…");
-    }
 }

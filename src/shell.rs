@@ -37,6 +37,7 @@ pub enum FocusTarget {
 
 /// Socket 连接状态(ADR-3)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Disconnected 保留为未来重连逻辑的 UI 状态契约
 pub enum ConnState {
     Disconnected,
     Connected,

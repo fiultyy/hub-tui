@@ -34,14 +34,3 @@ pub fn truncate_width(s: &str, max_width: usize) -> String {
     result
 }
 
-/// 显示宽度感知左对齐填充:右侧补空格。
-pub fn pad_left(s: &str, target_width: usize) -> String {
-    use unicode_width::UnicodeWidthStr;
-    let w = UnicodeWidthStr::width(s);
-    if w >= target_width {
-        truncate_width(s, target_width)
-    } else {
-        let pad = target_width - w;
-        format!("{s}{}", " ".repeat(pad))
-    }
-}
