@@ -157,6 +157,10 @@ pub struct Shell {
     pub quickswitch_query: String,
     /// Quick-Switch 选中索引。
     pub quickswitch_cursor: usize,
+    /// Activity log 类别过滤(空=显示全部)。
+    pub activity_filter_categories: std::collections::HashSet<crate::model::EventCategory>,
+    /// Activity log 严重级别过滤(空=显示全部)。
+    pub activity_filter_severity: std::collections::HashSet<crate::model::EventSeverity>,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
@@ -218,6 +222,8 @@ impl Shell {
             quickswitch_active: false,
             quickswitch_query: String::new(),
             quickswitch_cursor: 0,
+            activity_filter_categories: std::collections::HashSet::new(),
+            activity_filter_severity: std::collections::HashSet::new(),
             theme_name: "default".to_string(),
             generation: 0,
         }

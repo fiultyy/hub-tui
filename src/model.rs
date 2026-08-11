@@ -150,7 +150,7 @@ impl StatusCategory {
 // ───────────────────────── 活动日志(Activity Log)─────────────────────────
 
 /// 事件严重级别。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum EventSeverity {
     Info,
     Warn,
@@ -185,7 +185,7 @@ impl EventSeverity {
 }
 
 /// 事件类别(用于过滤/着色)。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum EventCategory {
     /// agent 生命周期: 出现/消失/创建。
     Agent,

@@ -1968,6 +1968,13 @@ fn handle_quickswitch_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> 
         _ => vec![],
     }
 }
+
+/// Toggle a value in a HashSet filter (present = filtered out, absent = shown).
+fn toggle_filter<T: std::hash::Hash + Eq + Clone + PartialEq>(filter: &mut std::collections::HashSet<T>, val: T) {
+    if !filter.remove(&val) {
+        filter.insert(val);
+    }
+}
 fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     // Quick actions overlay: highest priority, handles its own keys with early return
     if shell.quick_actions_active {
@@ -2041,6 +2048,29 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             }
             _ => vec![],
         };
+    }
+
+    // Activity log filters: number keys toggle category/severity filters
+    if shell.activity_active {
+        if let KeyCode::Char(c) = k.code {
+            let mut handled = true;
+            match c {
+                '1' => { toggle_filter(&mut shell.activity_filter_categories, crate::model::EventCategory::Agent); }
+                '2' => { toggle_filter(&mut shell.activity_filter_categories, crate::model::EventCategory::State); }
+                '3' => { toggle_filter(&mut shell.activity_filter_categories, crate::model::EventCategory::Message); }
+                '4' => { toggle_filter(&mut shell.activity_filter_categories, crate::model::EventCategory::Group); }
+                '5' => { toggle_filter(&mut shell.activity_filter_categories, crate::model::EventCategory::System); }
+                '6' => { toggle_filter(&mut shell.activity_filter_severity, crate::model::EventSeverity::Info); }
+                '7' => { toggle_filter(&mut shell.activity_filter_severity, crate::model::EventSeverity::Warn); }
+                '8' => { toggle_filter(&mut shell.activity_filter_severity, crate::model::EventSeverity::Error); }
+                '0' => {
+                    shell.activity_filter_categories.clear();
+                    shell.activity_filter_severity.clear();
+                }
+                _ => { handled = false; }
+            }
+            if handled { return vec![]; }
+        }
     }
     match (k.code, k.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {

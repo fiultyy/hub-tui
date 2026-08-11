@@ -1741,8 +1741,15 @@ fn format_hms(ts_ms: i64) -> String {
 fn draw_activity_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     use ratatui::widgets::{Borders, Clear};
 
+    // 过滤事件
+    let filtered_events: Vec<&crate::model::Event> = model.events.iter().rev().filter(|e| {
+        let cat_ok = shell.activity_filter_categories.is_empty() || !shell.activity_filter_categories.contains(&e.category);
+        let sev_ok = shell.activity_filter_severity.is_empty() || !shell.activity_filter_severity.contains(&e.severity);
+        cat_ok && sev_ok
+    }).collect();
+
     // 构建行(最新在前)
-    let lines: Vec<Line> = model.events.iter().rev().map(|e| {
+    let mut lines: Vec<Line> = filtered_events.iter().map(|e| {
         let ts = format_hms(e.timestamp_ms);
         let sev_color = match e.severity {
             EventSeverity::Error => theme.error,
@@ -1763,6 +1770,16 @@ fn draw_activity_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect
         ])
     }).collect();
 
+    // Filter status header
+    let has_filters = !shell.activity_filter_categories.is_empty() || !shell.activity_filter_severity.is_empty();
+    if has_filters {
+        lines.insert(0, Line::from(Span::styled(
+            format!(" ⚡ Filtered: {} of {} events shown (0:reset)", filtered_events.len(), model.events.len()),
+            Style::default().fg(theme.warn),
+        )));
+        lines.insert(1, Line::from(""));
+    }
+
     let lines = if lines.is_empty() {
         vec![Line::from(Span::styled(" (no events)", Style::default().fg(theme.muted)))]
     } else {
@@ -1778,7 +1795,7 @@ fn draw_activity_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect
 
     f.render_widget(Clear, overlay_area);
 
-    let title = " Activity Log (j/k:scroll c:clear Esc:close) ";
+    let title = " Activity Log (1-5:cat 6-8:sev 0:reset c:clear Esc:close) ";
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))
