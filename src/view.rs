@@ -175,6 +175,11 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     if shell.quickswitch_active {
         draw_quickswitch_overlay(f, model, shell, area, &theme);
     }
+
+    // Group wiring 浮层(G 键激活)
+    if shell.group_overlay_active {
+        draw_group_overlay(f, model, shell, area, &theme);
+    }
 }
 
 /// 终端太小提示。
@@ -1167,8 +1172,8 @@ fn status_hint(shell: &Shell) -> String {
         return " Esc:cancel Enter:send ".to_string();
     }
     match shell.tab {
-        Tab::Directory => " j/k:nav i:input s:switch p:pty w:worktree @:pin /:filter ?:help ".to_string(),
-        Tab::Messages => " j/k:nav /:filter g:next ?:help ".to_string(),
+        Tab::Directory => " j/k:nav i:input s:switch p:pty w:worktree G:group @:pin /:filter ?:help ".to_string(),
+        Tab::Messages => " j/k:nav Enter:reply /:filter g:next ?:help ".to_string(),
     }
 }
 
@@ -2881,6 +2886,117 @@ fn draw_quickswitch_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: R
     let list = List::new(items)
         .highlight_style(Style::default().bg(theme.selection_bg).fg(theme.selection_fg).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(list, inner, &mut list_state);
+}
+
+/// Group wiring overlay: 列出已有 groups, 可加入/退出, 可新建。
+/// h 键: handshake → 向 group 成员群发通信信息。
+fn draw_group_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    let current_handle = crate::update::selected_agent_handle_public(model, shell);
+
+    // 创建模式
+    if shell.group_creating {
+        let overlay_w = 50.min(area.width);
+        let overlay_h = 5;
+        let x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+        let y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
+        let oa = Rect::new(x, y, overlay_w, overlay_h);
+        f.render_widget(Clear, oa);
+        let block = Block::default().borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .title(" New Group (type name, Enter=create, Esc=cancel) ");
+        let inner = block.inner(oa);
+        f.render_widget(block, oa);
+        let line = if shell.group_create_buf.is_empty() {
+            Line::from(Span::styled(" group name...", Style::default().fg(theme.muted)))
+        } else {
+            Line::from(Span::styled(format!(" {}", shell.group_create_buf), Style::default().fg(theme.fg)))
+        };
+        f.render_widget(line, inner);
+        return;
+    }
+
+    let mut names: Vec<String> = model.groups.keys().cloned().collect();
+    names.sort();
+    let n = names.len();
+    // +1 for "new group" option
+    let list_len = n + 1;
+    let cursor = shell.group_overlay_cursor.min(list_len.saturating_sub(1));
+
+    let overlay_h = (list_len as u16 + 5).min(area.height.saturating_sub(4));
+    let overlay_w = 60.min(area.width);
+    let x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
+    let oa = Rect::new(x, y, overlay_w, overlay_h);
+
+    f.render_widget(Clear, oa);
+    let cur_name = current_handle.as_ref()
+        .and_then(|h| crate::view::handle_tag(h).to_string().into())
+        .unwrap_or_default();
+    let title = format!(" Group Wiring — agent: {} (Enter:join/leave h:handshake Esc:close) ", cur_name);
+    let block = Block::default().borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(title);
+    let inner = block.inner(oa);
+    f.render_widget(block, oa);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // 列出 groups
+    for (i, gname) in names.iter().enumerate() {
+        let members = model.groups.get(gname).map(|s| s.len()).unwrap_or(0);
+        let is_in = current_handle.as_ref()
+            .map(|h| model.groups.get(gname).map(|s| s.contains(h)).unwrap_or(false))
+            .unwrap_or(false);
+        let mark = if is_in { "\u{25cf}" } else { " " }; // ● = joined
+        let mark_color = if is_in { theme.success } else { theme.muted };
+
+        // 成员预览: 前 3 个 tag
+        let preview: String = model.groups.get(gname).map(|s| {
+            let tags: Vec<String> = s.iter()
+                .map(|h| handle_tag(h).to_string())
+                .take(3)
+                .collect();
+            let extra = if s.len() > 3 { format!(" +{}", s.len() - 3) } else { String::new() };
+            format!("{tags:?}{}", extra)
+        }).unwrap_or_default();
+
+        let selected = i == cursor;
+        let style = if selected {
+            Style::default().bg(theme.selection_bg).fg(theme.selection_fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {} ", mark), Style::default().fg(mark_color)),
+            Span::styled(format!("{:<16}", gname), style),
+            Span::styled(format!(" ({}) ", members), Style::default().fg(theme.muted)),
+            Span::styled(preview, Style::default().fg(theme.muted)),
+        ]));
+    }
+
+    // "+ new group" 选项
+    let selected_new = cursor == n;
+    let new_style = if selected_new {
+        Style::default().bg(theme.selection_bg).fg(theme.selection_fg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.accent)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(" + ", new_style),
+        Span::styled("new group", new_style),
+    ]));
+
+    // 空行 + hint
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " j/k:navigate  Enter:join/leave  h:handshake(broadcast)  Esc:close",
+        Style::default().fg(theme.muted),
+    )));
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
 }
 
 #[cfg(test)]

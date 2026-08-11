@@ -516,7 +516,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.quickswitch_active {
         return handle_quickswitch_key(model, shell, k);
     }
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active || shell.template_overlay_active || shell.sched_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active || shell.template_overlay_active || shell.sched_overlay_active || shell.group_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
     // Ctrl-W: toggle watch on current agent (non-insert mode)
@@ -679,6 +679,18 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         (KeyCode::Char('S'), KeyModifiers::SHIFT) if !shell.insert_mode => {
             shell.snippet_overlay_active = !shell.snippet_overlay_active;
             if shell.snippet_overlay_active {
+                shell.overlay_scroll = 0;
+            }
+            return vec![];
+        }
+
+        // G(Shift+g): group wiring overlay (Directory tab only)
+        (KeyCode::Char('G'), KeyModifiers::SHIFT) if !shell.insert_mode && shell.tab == Tab::Directory => {
+            shell.group_overlay_active = !shell.group_overlay_active;
+            if shell.group_overlay_active {
+                shell.group_overlay_cursor = 0;
+                shell.group_creating = false;
+                shell.group_create_buf.clear();
                 shell.overlay_scroll = 0;
             }
             return vec![];
@@ -912,7 +924,14 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
                 vec![]
             }
             Tab::Messages => {
-                // 只读观测 tab — Enter 无操作
+                // Enter: 进入 reply 模式, 预填 reply:<msg_id>
+                let msgs: Vec<_> = model.messages.iter().rev().collect();
+                if let Some(msg) = msgs.get(shell.cursor) {
+                    let id = &msg.id;
+                    shell.insert_mode = true;
+                    shell.focus = FocusTarget::Input;
+                    shell.input_buf = format!("reply:{id} ");
+                }
                 vec![]
             }
         }
@@ -2207,6 +2226,139 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             }
             if handled { return vec![]; }
         }
+    }
+    // ── Group wiring overlay ──
+    if shell.group_overlay_active {
+        return match (k.code, k.modifiers) {
+            (KeyCode::Esc | KeyCode::Char('q'), _) => {
+                shell.group_overlay_active = false;
+                shell.group_creating = false;
+                shell.group_create_buf.clear();
+                vec![]
+            }
+            // 创建模式: 输入 group 名
+            (KeyCode::Char(c), _) if shell.group_creating => {
+                shell.group_create_buf.push(c);
+                vec![]
+            }
+            (KeyCode::Backspace, _) if shell.group_creating => {
+                shell.group_create_buf.pop();
+                vec![]
+            }
+            (KeyCode::Enter, _) if shell.group_creating => {
+                let name = shell.group_create_buf.trim().to_string();
+                if name.is_empty() {
+                    shell.group_creating = false;
+                    vec![]
+                } else {
+                    // 创建 group 并把当前 agent 加入
+                    let handle = match selected_agent_handle(model, shell) {
+                        Some(h) => h,
+                        None => return vec![],
+                    };
+                    let self_h = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+                    model.groups.entry(name.clone()).or_default().insert(handle.clone());
+                    if !self_h.is_empty() {
+                        model.groups.entry(name.clone()).or_default().insert(self_h.clone());
+                    }
+                    shell.push_toast(format!("Group '{name}' created + {handle} joined"));
+                    shell.group_creating = false;
+                    shell.group_create_buf.clear();
+                    let mut cmds = vec![
+                        Cmd::PersistGroupJoin { name: name.clone(), handle },
+                    ];
+                    if !self_h.is_empty() {
+                        cmds.push(Cmd::PersistGroupJoin { name, handle: self_h });
+                    }
+                    cmds.push(Cmd::WriteDirectory);
+                    cmds
+                }
+            }
+            // 列表模式: j/k 导航
+            (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
+                let n = model.groups.len();
+                if n > 0 {
+                    shell.group_overlay_cursor = (shell.group_overlay_cursor + 1) % (n + 1);
+                }
+                vec![]
+            }
+            (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
+                let n = model.groups.len();
+                if n > 0 {
+                    if shell.group_overlay_cursor == 0 {
+                        shell.group_overlay_cursor = n;
+                    } else {
+                        shell.group_overlay_cursor -= 1;
+                    }
+                }
+                vec![]
+            }
+            // Enter: 选中 → 加入当前 agent / 或创建新 group
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                let names: Vec<String> = {
+                    let mut v: Vec<String> = model.groups.keys().cloned().collect();
+                    v.sort();
+                    v
+                };
+                let n = names.len();
+                if shell.group_overlay_cursor == n {
+                    // 最后一项 = "+ new group"
+                    shell.group_creating = true;
+                    shell.group_create_buf.clear();
+                    vec![]
+                } else if let Some(gname) = names.get(shell.group_overlay_cursor) {
+                    // 加入已有 group
+                    let handle = match selected_agent_handle(model, shell) {
+                        Some(h) => h,
+                        None => return vec![],
+                    };
+                    let was_in = model.groups.get(gname).map(|s| s.contains(&handle)).unwrap_or(false);
+                    if was_in {
+                        // 已在 → 退出
+                        if let Some(members) = model.groups.get_mut(gname) {
+                            members.remove(&handle);
+                            if members.is_empty() {
+                                model.groups.remove(gname);
+                            }
+                        }
+                        shell.push_toast(format!("Left group '{gname}'"));
+                        shell.group_overlay_active = false;
+                        vec![Cmd::PersistGroupLeave { name: gname.clone(), handle }, Cmd::WriteDirectory]
+                    } else {
+                        model.groups.entry(gname.clone()).or_default().insert(handle.clone());
+                        shell.push_toast(format!("Joined group '{gname}'"));
+                        shell.group_overlay_active = false;
+                        vec![Cmd::PersistGroupJoin { name: gname.clone(), handle }, Cmd::WriteDirectory]
+                    }
+                } else {
+                    vec![]
+                }
+            }
+            // h: handshake → 向 group 成员群发通信信息
+            (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                let names: Vec<String> = {
+                    let mut v: Vec<String> = model.groups.keys().cloned().collect();
+                    v.sort();
+                    v
+                };
+                if let Some(gname) = names.get(shell.group_overlay_cursor) {
+                    let handles: Vec<String> = model.groups.get(gname)
+                        .map(|s| s.iter().cloned().collect())
+                        .unwrap_or_default();
+                    if handles.is_empty() {
+                        shell.push_toast(format!("Group '{gname}' has no members"));
+                        vec![]
+                    } else {
+                        let n = handles.len();
+                        shell.push_toast(format!("🤝 Handshake: broadcasting to {n} members of '{gname}'"));
+                        vec![Cmd::GroupBroadcast { name: gname.clone(), message: "hub-tui handshake".to_string(), handles }]
+                    }
+                } else {
+                    vec![]
+                }
+            }
+            _ => vec![],
+        };
     }
     match (k.code, k.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {

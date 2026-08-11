@@ -164,6 +164,14 @@ pub struct Shell {
     pub template_overlay_active: bool,
     /// Scheduler 浮层激活(sched:list 触发)。
     pub sched_overlay_active: bool,
+    /// Group wiring 浮层激活(G 键)。
+    pub group_overlay_active: bool,
+    /// Group 浮层选中索引。
+    pub group_overlay_cursor: usize,
+    /// Group 浮层: 新建 group 名输入缓冲(非空=正在输入)。
+    pub group_create_buf: String,
+    /// Group 浮层: 正在创建模式。
+    pub group_creating: bool,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
@@ -224,6 +232,10 @@ impl Shell {
             theme_overlay_active: false,
             quickswitch_active: false,
             quickswitch_query: String::new(),
+            group_overlay_active: false,
+            group_overlay_cursor: 0,
+            group_create_buf: String::new(),
+            group_creating: false,
             sched_overlay_active: false,
             template_overlay_active: false,
             autocomplete_active: false,
