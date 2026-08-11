@@ -746,6 +746,202 @@ pub fn filter_commands(query: &str) -> Vec<Command> {
         .collect()
 }
 
+// ─────────────────────────── Input Autocomplete ───────────────────────────
+
+/// Autocomplete suggestion entry for the Tab-completion dropdown.
+#[derive(Debug, Clone)]
+pub struct AcSuggestion {
+    /// Display text shown in the dropdown.
+    pub label: String,
+    /// Full text to replace `input_buf` on accept.
+    pub insert: String,
+    /// Source category badge ("prefix", "agent", "snippet", "macro", "view", "group").
+    pub source: &'static str,
+}
+
+/// All recognised input prefixes for Tab-completion.
+pub const INPUT_PREFIXES: &[&str] = &[
+    "to:", "pty:", "inject:", "rename:", "group:", "join:", "leave:",
+    "broadcast:", "create:", "config:", "reply:", "batch:", "tag:",
+    "tagged:", "snip:", "run:", "rule:", "macro:", "view:", "note:",
+    "export:", "import:", "alias:", "hotkey:", "theme:", "watch:",
+    "chain:",
+];
+
+/// Prefixes where the first argument is an agent handle.
+const HANDLE_PREFIXES: &[&str] = &["to:", "pty:", "rename:", "watch:"];
+/// Prefixes where the first argument is a group name.
+const GROUP_PREFIXES: &[&str] = &["join:", "leave:", "broadcast:", "group:"];
+
+/// Compute ranked autocomplete suggestions for the given input buffer.
+///
+/// Three tiers:
+/// 1. Partial prefix (no colon) → suggest matching prefixes.
+/// 2. Known prefix + partial arg → suggest context-appropriate completions
+///    (agent handles, snippet/macro/view names, group names).
+/// 3. Subcommand-aware: `macro:run:` → macro names, `view:load:` → view names, etc.
+pub fn autocomplete_suggestions(input: &str, model: &crate::model::Model) -> Vec<AcSuggestion> {
+    let q = input.trim();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    autocomplete_into(q, model, &mut out);
+    out.truncate(8);
+    out
+}
+
+fn autocomplete_into(q: &str, model: &crate::model::Model, out: &mut Vec<AcSuggestion>) {
+    // Try to match a known prefix
+    for &pfx in INPUT_PREFIXES {
+        if q.starts_with(pfx) {
+            let arg = &q[pfx.len()..];
+            suggest_after_prefix(pfx, arg, model, out);
+            return;
+        }
+    }
+
+    // No known prefix matched → suggest prefix completions
+    for &pfx in INPUT_PREFIXES {
+        if pfx.starts_with(q) && q.len() < pfx.len() {
+            out.push(AcSuggestion {
+                label: format!("{}  [prefix]", pfx),
+                insert: pfx.to_string(),
+                source: "prefix",
+            });
+        }
+    }
+}
+
+/// Suggest completions after a recognised prefix.
+fn suggest_after_prefix(pfx: &str, arg: &str, model: &crate::model::Model, out: &mut Vec<AcSuggestion>) {
+    let arg = arg.trim_start();
+
+    // ── Handle-taking prefixes ──
+    if HANDLE_PREFIXES.contains(&pfx) {
+        push_handles(pfx, arg, model, out);
+        return;
+    }
+
+    // ── Group-taking prefixes ──
+    if GROUP_PREFIXES.contains(&pfx) {
+        push_groups(pfx, arg, model, out);
+        return;
+    }
+
+    // ── Prefixes with named entities ──
+    match pfx {
+        "snip:" => {
+            if let Some(partial) = arg.strip_prefix("rm:") {
+                push_names("snip:rm:", partial, model.snippets.keys(), "snippet", out);
+            } else {
+                push_names("snip:", arg, model.snippets.keys(), "snippet", out);
+            }
+        }
+        "macro:" => {
+            if arg.is_empty() {
+                for sub in &["record:", "run:", "rm:", "stop", "list"] {
+                    out.push(sub_cmd(pfx, sub));
+                }
+            } else if let Some(sub) = arg.strip_prefix("run:").map(|_| "run:")
+                .or_else(|| arg.strip_prefix("rm:").map(|_| "rm:"))
+                .or_else(|| arg.strip_prefix("record:").map(|_| "record:"))
+            {
+                let partial = &arg[sub.len()..];
+                push_names(&format!("macro:{}", sub), partial, model.macros.keys(), "macro", out);
+            }
+        }
+        "view:" => {
+            if arg.is_empty() {
+                for sub in &["save:", "load:", "rm:", "list"] {
+                    out.push(sub_cmd(pfx, sub));
+                }
+            } else if let Some(sub) = arg.strip_prefix("load:").map(|_| "load:")
+                .or_else(|| arg.strip_prefix("rm:").map(|_| "rm:"))
+                .or_else(|| arg.strip_prefix("save:").map(|_| "save:"))
+            {
+                let partial = &arg[sub.len()..];
+                push_names(&format!("view:{}", sub), partial, model.saved_views.keys(), "view", out);
+            }
+        }
+        "alias:" => {
+            if let Some(partial) = arg.strip_prefix("rm:") {
+                push_names("alias:rm:", partial, model.aliases.keys(), "alias", out);
+            } else {
+                push_names("alias:", arg, model.aliases.keys(), "alias", out);
+            }
+        }
+        "tag:" => {
+            if arg.is_empty() {
+                out.push(sub_cmd("tag:", "add:"));
+                out.push(sub_cmd("tag:", "rm:"));
+            }
+            // After tag:add:/tag:rm:/bare tag:, suggest handles
+            let (tag_pfx, partial) = if let Some(p) = arg.strip_prefix("add:") {
+                ("tag:add:", p)
+            } else if let Some(p) = arg.strip_prefix("rm:") {
+                ("tag:rm:", p)
+            } else if !arg.contains(':') {
+                ("tag:", arg)
+            } else {
+                return;
+            };
+            push_handles(tag_pfx, partial, model, out);
+        }
+        _ => {}
+    }
+}
+
+fn push_handles(insert_pfx: &str, partial: &str, model: &crate::model::Model, out: &mut Vec<AcSuggestion>) {
+    for h in model.directory.keys() {
+        if fuzzy_match(partial, h) {
+            out.push(AcSuggestion {
+                label: format!("{}{}", insert_pfx.trim_end(), h),
+                insert: format!("{}{} ", insert_pfx, h),
+                source: "agent",
+            });
+        }
+    }
+}
+
+fn push_groups(pfx: &str, partial: &str, model: &crate::model::Model, out: &mut Vec<AcSuggestion>) {
+    for name in model.groups.keys() {
+        if fuzzy_match(partial, name) {
+            out.push(AcSuggestion {
+                label: format!("{}{}", pfx, name),
+                insert: format!("{}{}", pfx, name),
+                source: "group",
+            });
+        }
+    }
+}
+
+fn push_names<'a, I: Iterator<Item = &'a String>>(
+    label_pfx: &str,
+    partial: &str,
+    names: I,
+    source: &'static str,
+    out: &mut Vec<AcSuggestion>,
+) {
+    for name in names {
+        if fuzzy_match(partial, name) {
+            out.push(AcSuggestion {
+                label: format!("{}{}", label_pfx, name),
+                insert: format!("{}{}", label_pfx, name),
+                source,
+            });
+        }
+    }
+}
+
+fn sub_cmd(pfx: &str, sub: &str) -> AcSuggestion {
+    AcSuggestion {
+        label: format!("{}{}", pfx, sub),
+        insert: format!("{}{}", pfx, sub),
+        source: "subcmd",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,5 +983,59 @@ mod tests {
     fn test_filter_commands_empty_returns_all() {
         let results = filter_commands("");
         assert_eq!(results.len(), builtin_commands().len());
+    }
+
+    #[test]
+    fn test_autocomplete_prefix_partial() {
+        let m = crate::model::Model::new();
+        let sugs = autocomplete_suggestions("to", &m);
+        assert!(sugs.iter().any(|s| s.insert == "to:"));
+    }
+
+    fn test_agent() -> crate::model::Agent {
+        crate::model::Agent {
+            handle: "term_abc".to_string(),
+            pty_id: None,
+            cwd: "/tmp".to_string(),
+            worktree_id: String::new(),
+            branch: String::new(),
+            tab_id: String::new(),
+            leaf_id: String::new(),
+            pane_key: String::new(),
+            title: None,
+            connected: false,
+            writable: false,
+            source: None,
+            state: None,
+            prompt: None,
+            tool_name: None,
+            tool_input: None,
+            last_assistant_msg: None,
+            preview: None,
+            last_output_at: None,
+        }
+    }
+
+    #[test]
+    fn test_autocomplete_empty_returns_nothing() {
+        let m = crate::model::Model::new();
+        let sugs = autocomplete_suggestions("", &m);
+        assert!(sugs.is_empty());
+    }
+
+    #[test]
+    fn test_autocomplete_exact_prefix_suggests_handles() {
+        let mut m = crate::model::Model::new();
+        m.directory.insert("term_abc".to_string(), test_agent());
+        let sugs = autocomplete_suggestions("to:abc", &m);
+        assert!(sugs.iter().any(|s| s.insert.starts_with("to:term_abc")));
+    }
+
+    #[test]
+    fn test_autocomplete_macro_subcommands() {
+        let m = crate::model::Model::new();
+        let sugs = autocomplete_suggestions("macro:", &m);
+        assert!(sugs.iter().any(|s| s.insert == "macro:record:"));
+        assert!(sugs.iter().any(|s| s.insert == "macro:run:"));
     }
 }

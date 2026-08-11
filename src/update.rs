@@ -509,6 +509,59 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
         return vec![Cmd::PersistMacro(m)];
     }
 
+    // ── Autocomplete (insert mode only) ──
+    // When active: Tab accepts, Up/Down navigate, Esc dismisses.
+    // First Tab press (not active): triggers dropdown if suggestions exist.
+    if shell.insert_mode {
+        if shell.autocomplete_active {
+            match k.code {
+                KeyCode::Tab => {
+                    let sugs = crate::command::autocomplete_suggestions(&shell.input_buf, model);
+                    if let Some(s) = sugs.get(shell.autocomplete_cursor) {
+                        shell.input_buf = s.insert.clone();
+                    }
+                    shell.autocomplete_active = false;
+                    shell.autocomplete_cursor = 0;
+                    return vec![];
+                }
+                KeyCode::Up => {
+                    let sugs = crate::command::autocomplete_suggestions(&shell.input_buf, model);
+                    if !sugs.is_empty() {
+                        if shell.autocomplete_cursor == 0 {
+                            shell.autocomplete_cursor = sugs.len() - 1;
+                        } else {
+                            shell.autocomplete_cursor -= 1;
+                        }
+                    }
+                    return vec![];
+                }
+                KeyCode::Down => {
+                    let sugs = crate::command::autocomplete_suggestions(&shell.input_buf, model);
+                    if !sugs.is_empty() {
+                        shell.autocomplete_cursor = (shell.autocomplete_cursor + 1) % sugs.len();
+                    }
+                    return vec![];
+                }
+                KeyCode::Esc => {
+                    shell.autocomplete_active = false;
+                    shell.autocomplete_cursor = 0;
+                    return vec![];
+                }
+                _ => {
+                    // Other keys fall through to normal input handling.
+                    shell.autocomplete_cursor = 0;
+                }
+            }
+        } else if k.code == KeyCode::Tab && k.modifiers == KeyModifiers::NONE {
+            let sugs = crate::command::autocomplete_suggestions(&shell.input_buf, model);
+            if !sugs.is_empty() {
+                shell.autocomplete_active = true;
+                shell.autocomplete_cursor = 0;
+            }
+            return vec![];
+        }
+    }
+
     match (k.code, k.modifiers) {
         // Ctrl-P 或 : 打开命令面板
         (KeyCode::Char('p'), KeyModifiers::CONTROL) | (KeyCode::Char(':'), KeyModifiers::NONE) => {

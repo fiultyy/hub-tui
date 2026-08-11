@@ -45,6 +45,10 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     draw_tabbar(f, shell, outer[0], &theme);
     draw_tab_body(f, model, shell, outer[1], &theme);
     draw_input_bar(f, shell, outer[2], &theme);
+    // Autocomplete dropdown (insert mode + active): floats above input bar
+    if shell.insert_mode && shell.autocomplete_active {
+        draw_autocomplete_dropdown(f, model, shell, outer[2], &theme);
+    }
     draw_status_bar(f, shell, outer[3], &theme);
 
     // Toast 层(浮在底部上方)
@@ -993,7 +997,7 @@ fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
 fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     if shell.insert_mode {
         let input_display = if shell.input_buf.is_empty() {
-            Span::styled("Type message (Enter to send, Esc to cancel)", Style::default().fg(theme.muted))
+            Span::styled("Type message (Enter send, Tab complete, Esc cancel)", Style::default().fg(theme.muted))
         } else {
             Span::styled(shell.input_buf.as_str(), Style::default().fg(theme.fg))
         };
@@ -1023,6 +1027,48 @@ fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
         let para = Paragraph::new(Span::styled(hint, Style::default().fg(theme.muted)));
         f.render_widget(para, area);
     }
+}
+
+/// Autocomplete dropdown: Tab-completion suggestions floating above input bar.
+fn draw_autocomplete_dropdown(f: &mut Frame, model: &Model, shell: &Shell, input_area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Clear, Borders};
+
+    let suggestions = crate::command::autocomplete_suggestions(&shell.input_buf, model);
+    if suggestions.is_empty() {
+        return;
+    }
+
+    let visible = suggestions.len().min(6) as u16;
+    let dropdown_area = Rect {
+        x: input_area.x,
+        y: input_area.y.saturating_sub(visible),
+        width: input_area.width,
+        height: visible,
+    };
+
+    f.render_widget(Clear, dropdown_area);
+
+    let items: Vec<ListItem> = suggestions
+        .iter()
+        .take(6)
+        .enumerate()
+        .map(|(i, s)| {
+            let style = if i == shell.autocomplete_cursor {
+                Style::default().fg(theme.selection_fg).bg(theme.selection_bg)
+            } else {
+                Style::default().fg(theme.fg)
+            };
+            ListItem::new(Line::from(Span::styled(format!(" {}", s.label), style)))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border_focus))
+            .style(Style::default().bg(theme.bg)),
+    );
+    f.render_widget(list, dropdown_area);
 }
 /// 状态栏: spinner + 连接状态 + 动态快捷键提示。
 fn draw_status_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
@@ -1413,7 +1459,7 @@ fn draw_cheatsheet(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
         ("s             ", "Switch to selected agent"),
         ("p             ", "PTY inject to selected agent"),
         ("Enter         ", "Select agent / send message"),
-        ("Tab           ", "Switch tab"),
+        ("Tab           ", "Switch tab / Autocomplete (insert)"),
         ("/             ", "Filter agents (Directory)"),
         ("w             ", "Worktree overview"),
         ("Ctrl-P / :    ", "Command palette"),

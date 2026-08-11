@@ -161,6 +161,10 @@ pub struct Shell {
     pub activity_filter_categories: std::collections::HashSet<crate::model::EventCategory>,
     /// Activity log 严重级别过滤(空=显示全部)。
     pub activity_filter_severity: std::collections::HashSet<crate::model::EventSeverity>,
+    /// Autocomplete dropdown 激活(insert mode 中 Tab 触发)。
+    pub autocomplete_active: bool,
+    /// Autocomplete 选中索引。
+    pub autocomplete_cursor: usize,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
@@ -221,6 +225,8 @@ impl Shell {
             theme_overlay_active: false,
             quickswitch_active: false,
             quickswitch_query: String::new(),
+            autocomplete_active: false,
+            autocomplete_cursor: 0,
             quickswitch_cursor: 0,
             activity_filter_categories: std::collections::HashSet::new(),
             activity_filter_severity: std::collections::HashSet::new(),
