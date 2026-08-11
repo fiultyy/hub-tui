@@ -176,7 +176,21 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
         // ──── 鼠标左键点击(选中 card) ────
         AppMsg::MouseLeftClick { x, y } => {
-            // Select card only. Don't change scroll state.
+            // Freeze current viewport so directory_scroll doesn't auto-jump
+            // when cursor moves to an edge card.
+            if shell.manual_scroll.is_none() {
+                let sorted = if shell.filter_active {
+                    let q = shell.filter_query.as_deref().unwrap_or("");
+                    let full = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+                    crate::model::directory_filter_handles(&full, &model.directory, q, &model.tags)
+                } else {
+                    directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
+                };
+                let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
+                let layout = directory_layout(&sorted, model, 1, shell.size.0.saturating_sub(2));
+                let sy = crate::view::compute_scroll_y(shell, &layout, shell.size.1.saturating_sub(5));
+                shell.manual_scroll = Some(sy);
+            }
             if let Some(idx) = hit_test_card(model, shell, x, y) {
                 shell.cursor = idx;
             }
@@ -2523,24 +2537,33 @@ fn hit_test_card(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<usize> 
         return None;
     }
 
-    // 可用区域 = shell.size 减去 TabBar(1) + border(2) + input(1) + status(1)
+    // 可用区域 — 必须与 draw_directory 的 block.inner(area) 完全一致。
+    // area = outer[1]: x=0, y=1, w=W, h=H-3。block.inner() 再各去 1 圈 border。
     let inner_x = 1u16;
     let inner_y = 2u16;
     let inner_w = shell.size.0.saturating_sub(2);
     let inner_h = shell.size.1.saturating_sub(5);
 
-    let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+    // sorted 列表必须与 draw_directory 完全一致(含 filter_active)
+    let sorted = if shell.filter_active {
+        let q = shell.filter_query.as_deref().unwrap_or("");
+        let full = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+        crate::model::directory_filter_handles(&full, &model.directory, q, &model.tags)
+    } else {
+        directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
+    };
+    let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
     let layout = directory_layout(&sorted, model, inner_x, inner_w);
-    let scroll_y = directory_scroll(shell.cursor, &layout, inner_h);
+    // 必须用 compute_scroll_y — 与 draw_directory 共用, 否则 scroll 不一致
+    let scroll_y = crate::view::compute_scroll_y(shell, &layout, inner_h);
 
     for entry in &layout {
         if let LayoutItem::Card { sorted_idx } = entry.item {
-            // 跳过完全滚出视口顶部的卡片(saturating_sub 钳位会导致误命中)
-            if entry.y + entry.h <= scroll_y {
+            // 跳过完全滚出视口上方/下方的卡片
+            if entry.y + entry.h <= scroll_y || entry.y >= scroll_y + inner_h {
                 continue;
             }
             let adj_y = entry.y.saturating_sub(scroll_y) + inner_y;
-            // 点击落在卡片矩形内?
             if x >= entry.x
                 && x < entry.x + entry.w
                 && y >= adj_y

@@ -355,6 +355,14 @@ pub fn directory_scroll(cursor: usize, layout: &[LayoutEntry], visible_h: u16) -
     0
 }
 
+/// 统一 scroll_y 计算: draw_directory 和 hit_test_card 共用, 保证点击坐标一致。
+pub fn compute_scroll_y(shell: &crate::shell::Shell, layout: &[LayoutEntry], visible_h: u16) -> u16 {
+    match shell.manual_scroll {
+        Some(offset) => offset.min(layout.iter().map(|e| e.y + e.h).max().unwrap_or(0)),
+        None => directory_scroll(shell.cursor, layout, visible_h),
+    }
+}
+
 /// 状态分类 → 主题色映射。
 fn category_color(cat: StatusCategory, theme: &Theme) -> Color {
     match cat {
@@ -396,10 +404,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     };
     let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
     let layout = directory_layout(&sorted, model, inner.x, inner.width);
-    let scroll_y = match shell.manual_scroll {
-        Some(offset) => offset.min(layout.iter().map(|e| e.y + e.h).max().unwrap_or(0)),
-        None => directory_scroll(shell.cursor, &layout, inner.height),
-    };
+    let scroll_y = compute_scroll_y(shell, &layout, inner.height);
 
     for entry in &layout {
         // 内容空间剔除: 完全在视口上方/下方的项跳过
