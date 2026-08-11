@@ -703,54 +703,14 @@ fn draw_agent_card(
 
     f.render_widget(ratatui::widgets::Clear, area);
 
-    // ── row 0: tag + source图标 + title + badges ──
+    // ── row 0: termID tag only ──
     let id_tag = handle_tag(&agent.handle);
     let id_tag_str = format!(" {} ", id_tag);
     let id_tag_w = UnicodeWidthStr::width(id_tag_str.as_str());
-    let icon = if pinned { "\u{1f4cc}" } else if shell_selected { "\u{2713}" } else { source_icon(agent.source.as_deref()) };
-    let title_text = agent.title.as_deref().unwrap_or("").trim();
-    let badge_str = if unread > 0 { format!(" ({unread})") } else { String::new() };
-    let tag_badge = if let Some(first_tag) = tags.first() {
-        format!(" [{}]", first_tag)
-    } else {
-        String::new()
-    };
-    let note_badge = if has_note { " \u{1f4dd}" } else { "" }; // 📝
-    let note_badge_w = UnicodeWidthStr::width(note_badge);
-    let watch_badge = if watched { " \u{1f441}" } else { "" }; // 👁
-    let watch_badge_w = UnicodeWidthStr::width(watch_badge);
-    let tag_badge_w = UnicodeWidthStr::width(tag_badge.as_str());
-    let badge_w = UnicodeWidthStr::width(badge_str.as_str());
-    let icon_w = UnicodeWidthStr::width(icon) + 1;
-    let title_max = avail.saturating_sub(id_tag_w + icon_w + badge_w + tag_badge_w + note_badge_w + watch_badge_w);
-    let title_trunc = if !title_text.is_empty() && title_max > 2 {
-        crate::render::truncate_width(title_text, title_max)
-    } else {
-        String::new()
-    };
-    let title_display_w = UnicodeWidthStr::width(title_trunc.as_str());
-    let title_pad = title_max.saturating_sub(title_display_w);
-    let mut row0_spans = vec![
+    let row0 = Line::from(vec![
         Span::styled(id_tag_str, Style::default().bg(cs.tag_bg).fg(theme.bg).add_modifier(Modifier::BOLD)),
-        Span::styled(icon, Style::default().fg(cs.bar_fg).add_modifier(Modifier::BOLD)),
-        Span::styled(" ", Style::default()),
-        Span::styled(title_trunc, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
-        Span::styled(" ".repeat(title_pad), Style::default()),
-    ];
-    if !badge_str.is_empty() {
-        row0_spans.push(Span::styled(badge_str, Style::default().fg(theme.error).add_modifier(Modifier::BOLD)));
-    }
-    if !tag_badge.is_empty() {
-        row0_spans.push(Span::styled(tag_badge, Style::default().fg(theme.accent)));
-    }
-    if !note_badge.is_empty() {
-        row0_spans.push(Span::styled(note_badge, Style::default().fg(theme.muted)));
-    }
-    if !watch_badge.is_empty() {
-        row0_spans.push(Span::styled(watch_badge, Style::default().fg(theme.muted)));
-    }
-    row0_spans.push(Span::styled(" ".repeat(avail.saturating_sub(id_tag_w + icon_w + title_display_w + badge_w + tag_badge_w + note_badge_w + watch_badge_w)), bg_style));
-    let row0 = Line::from(row0_spans);
+        Span::styled(" ".repeat(avail.saturating_sub(id_tag_w)), bg_style),
+    ]);
 
     // ── rows 1-3: recap body (last_assistant_msg > prompt > preview_tail) ──
     let msg_raw = agent.last_assistant_msg.as_deref().unwrap_or("").trim();
