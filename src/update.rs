@@ -20,12 +20,10 @@ use crate::view::{directory_layout, directory_scroll, LayoutItem};
 pub enum Cmd {
     /// spawn: `orca-ide terminal list --json` 刷新通信录。
     RefreshAgents,
-    /// poll: `last-status.json` mtime 变化则 parse 并合并(ADR-5)。
-    RefreshStatus,
     /// 写 `~/.orca/hub-directory.json` 快照(ADR-6)。
     WriteDirectory,
-    /// socket 查询处理(ADR-3)。
-    QuerySocket { req: crate::msg::SocketReq },
+    /// poll: `last-status.json` mtime 变化则 parse 并合并(ADR-5)。
+    RefreshStatus,
     /// spawn: `orca terminal switch --terminal <handle>` 激活 tab。
     SwitchTerminal { handle: String },
     /// 持久化 agents 到 SQLite(非 IO: service.execute 内同步写 DB)。
@@ -102,15 +100,11 @@ pub enum Cmd {
     PersistTemplate { name: String, body: String },
     /// 移除命令模板。
     RemoveTemplate { name: String },
-    /// 无操作。
-    Noop,
     /// 退出。
     Quit,
 }
 
-
 /// 判断是否该刷新 agents。
-/// 从 model.config 读取 refresh_interval_ms,转换为 tick 数(tick=50ms)。
 fn should_refresh_agents(model: &Model, shell: &Shell) -> bool {
     let interval_ms = model.refresh_interval_ms();
     // 转换为 tick 数: tick=50ms → ticks = interval_ms / 50
@@ -320,9 +314,6 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
         }
 
 
-        AppMsg::SocketQuery(req) => {
-            vec![Cmd::QuerySocket { req }]
-        }
         // ──── PTY 注入结果 ────
         AppMsg::InjectOk(n) => {
             shell.push_toast(format!("PTY: sent {n} bytes"));
@@ -419,9 +410,6 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             shell.push_toast(format!("✖ import failed: {reason}"));
             vec![]
         }
-
-        // ──── 退出 ────
-        AppMsg::Quit => vec![Cmd::Quit],
     }
 }
 
@@ -899,6 +887,7 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
                 model.toggle_pin(&handle);
                 // Cursor relock: sort changed, find handle's new position
                 let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+                let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
                 if let Some(idx) = sorted.iter().position(|h| h == &handle) {
                     shell.cursor = idx;
                 }
@@ -1005,6 +994,11 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
 
     // Chain: split by ' | ' and dispatch each segment sequentially
     if let Some(rest) = buf.strip_prefix("chain:") {
+        // Guard: reject nested chains (any segment starting with "chain:" would recurse infinitely)
+        if rest.split(" | ").any(|s| s.trim().starts_with("chain:")) {
+            shell.push_toast("chain: nested chains are not allowed".into());
+            return vec![];
+        }
         let segments: Vec<&str> = rest.split(" | ").collect();
         if segments.len() < 2 {
             shell.push_toast("chain: usage: chain:cmd1 | cmd2 | cmd3".into());
@@ -1278,7 +1272,7 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         } else {
             shell.push_toast(format!("snippet not found: {name}"));
         }
-        return vec![Cmd::Noop];
+        return vec![];
     }
 
     // rule:add type:value / rule:rm:id — add/remove alert rule
@@ -1336,7 +1330,7 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             shell.recording_buffer.clear();
             shell.recording_name = name.clone();
             shell.push_toast(format!("\u{25cf} REC {name} (Esc to stop)"));
-            return vec![Cmd::Noop];
+            return vec![];
         }
         if rest == "stop" {
             if !shell.recording_active {
@@ -1365,7 +1359,7 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             } else {
                 shell.push_toast(format!("macro not found: {name}"));
             }
-            return vec![Cmd::Noop];
+            return vec![];
         }
         if let Some(name) = rest.strip_prefix("rm:") {
             let name = name.trim().to_string();
@@ -1852,6 +1846,7 @@ fn dispatch_search_jump(model: &mut Model, shell: &mut Shell) -> Vec<Cmd> {
     match result.jump_target {
         JumpTarget::AgentHandle(handle) => {
             let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+            let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
             if let Some(idx) = sorted.iter().position(|h| h == &handle) {
                 shell.tab = Tab::Directory;
                 shell.cursor = idx;
@@ -1890,7 +1885,7 @@ fn dispatch_search_jump(model: &mut Model, shell: &mut Shell) -> Vec<Cmd> {
 // ───────────────────────── 过滤模式键盘处理 ─────────────────────────
 
 /// 过滤模式键盘: 输入查询, Esc 退出, Enter 选中第一个结果。
-fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
+fn handle_filter_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     match (k.code, k.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) => {
             shell.filter_active = false;
@@ -1919,7 +1914,10 @@ fn handle_filter_key(_model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
         }
         // 过滤模式下仍允许 j/k 导航
         (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
-            shell.cursor += 1;
+            let len = list_len(model, shell);
+            if !len.is_empty() && shell.cursor < len.len() - 1 {
+                shell.cursor += 1;
+            }
             vec![]
         }
         (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
@@ -2432,13 +2430,16 @@ fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String
             let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
             if shell.filter_active {
                 let q = shell.filter_query.as_deref().unwrap_or("");
-                std::borrow::Cow::Owned(crate::model::directory_filter_handles(
+                let filtered = crate::model::directory_filter_handles(
                     &sorted,
                     &model.directory,
                     q,
                     &model.tags,
-                ))
+                );
+                let filtered = crate::model::apply_focus_filter(filtered, shell.focus_mode, &shell.selected_set);
+                std::borrow::Cow::Owned(filtered)
             } else {
+                let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
                 std::borrow::Cow::Owned(sorted)
             }
         }
@@ -2455,9 +2456,11 @@ fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
     let handles: Vec<String> = if shell.filter_active && shell.tab == Tab::Directory {
         let q = shell.filter_query.as_deref().unwrap_or("");
         let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
-        crate::model::directory_filter_handles(&sorted, &model.directory, q, &model.tags)
+        let filtered = crate::model::directory_filter_handles(&sorted, &model.directory, q, &model.tags);
+        crate::model::apply_focus_filter(filtered, shell.focus_mode, &shell.selected_set)
     } else {
-        directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
+        let sorted = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+        crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set)
     };
     handles.get(shell.cursor).cloned()
 }
@@ -2976,9 +2979,9 @@ mod tests {
             preview: None, last_output_at: None,
         });
         model.add_tag("term_a", "frontend");
-        assert!(model.has_tag("term_a", "frontend"));
+        assert!(model.tags.get("term_a").map_or(false, |s| s.contains("frontend")));
         model.remove_tag("term_a", "frontend");
-        assert!(!model.has_tag("term_a", "frontend"));
+        assert!(!model.tags.get("term_a").map_or(false, |s| s.contains("frontend")));
     }
     #[test]
     fn snippet_save_and_run() {

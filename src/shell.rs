@@ -169,8 +169,6 @@ pub struct Shell {
     pub group_creating: bool,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
-    /// generation guard(范式 3: 防陈旧回调)。
-    generation: u64,
 }
 
 impl Shell {
@@ -239,18 +237,7 @@ impl Shell {
             activity_filter_categories: std::collections::HashSet::new(),
             activity_filter_severity: std::collections::HashSet::new(),
             theme_name: "default".to_string(),
-            generation: 0,
         }
-    }
-
-    /// generation guard: 发起异步操作前递增,回调时比对丢弃陈旧结果(范式 3)。
-    pub fn next_generation(&mut self) -> u64 {
-        self.generation += 1;
-        self.generation
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.generation
     }
 
     /// 追加 toast 通知(发送成功/失败/错误提示)。

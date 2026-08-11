@@ -5,7 +5,6 @@
 //! handle_connection 直接 lock+读 model 回应查询,不走 fan-in channel。
 //! Group mutations persist to Db for restart survival.
 
-use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::thread;
 use std::os::unix::net::{UnixListener, UnixStream};

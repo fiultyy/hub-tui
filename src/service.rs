@@ -287,23 +287,66 @@ impl Service {
                             Ok(b) => b,
                             Err(e) => { let _ = tx.send(AppMsg::ImportFailed { reason: e.to_string() }); return; }
                         };
-                        // Clear + re-insert to DB
+                        // Import inside a transaction: clear + re-insert is atomic.
                         if let Some(db) = &db {
-                            db.clear_user_data();
-                            for (k, v) in &bundle.config { db.set_config(k, v); }
-                            for (h, tags) in &bundle.tags { for t in tags { db.upsert_tag(h, t); } }
-                            for (n, t) in &bundle.snippets { db.upsert_snippet(n, t); }
-                            for m in &bundle.macros { db.upsert_macro(&m.name, &m.key_events_json); }
-                            for (n, snap) in &bundle.saved_views {
-                                if let Ok(json) = serde_json::to_string(snap) { db.upsert_saved_view(n, &json); }
-                            }
-                            for h in &bundle.pinned { db.upsert_pinned(h); }
-                            for r in &bundle.alert_rules { db.upsert_alert_rule(r.rule_type.as_str(), &r.value); }
-                            for (h, note) in &bundle.notes { db.upsert_note(h, note); }
-                            for (n, e) in &bundle.aliases { db.upsert_alias(n, e); }
-                            for (k, c) in &bundle.hotkeys { db.upsert_hotkey(k, c); }
-                            for h in &bundle.watched { db.upsert_watched(h); }
-                            for (n, b) in &bundle.templates { db.upsert_template(n, b); }
+                            use rusqlite::params;
+                            let _ = db.transaction(|conn| {
+                                conn.execute_batch("
+                                    DELETE FROM groups;
+                                    DELETE FROM group_members;
+                                    DELETE FROM pinned_agents;
+                                    DELETE FROM agent_tags;
+                                    DELETE FROM snippets;
+                                    DELETE FROM alert_rules;
+                                    DELETE FROM macros;
+                                    DELETE FROM saved_views;
+                                    DELETE FROM agent_notes;
+                                    DELETE FROM aliases;
+                                    DELETE FROM hotkeys;
+                                    DELETE FROM watched_agents;
+                                    DELETE FROM templates;
+                                    DELETE FROM config WHERE key != 'db_version';
+                                ")?;
+                                let ts = crate::model::now_ms();
+                                for (k, v) in &bundle.config {
+                                    conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)", params![k, v])?;
+                                }
+                                for (h, tags) in &bundle.tags { for t in tags {
+                                    conn.execute("INSERT OR IGNORE INTO agent_tags (handle, tag) VALUES (?1, ?2)", params![h, t])?;
+                                }}
+                                for (n, t) in &bundle.snippets {
+                                    conn.execute("INSERT OR REPLACE INTO snippets (name, text, created_at) VALUES (?1, ?2, ?3)", params![n, t, ts])?;
+                                }
+                                for m in &bundle.macros {
+                                    conn.execute("INSERT OR REPLACE INTO macros (name, key_events, created_at) VALUES (?1, ?2, ?3)", params![&m.name, &m.key_events_json, ts])?;
+                                }
+                                for (n, snap) in &bundle.saved_views {
+                                    let json = serde_json::to_string(snap).map_err(|_| rusqlite::Error::InvalidParameterName("serde".into()))?;
+                                    conn.execute("INSERT OR REPLACE INTO saved_views (name, view_state, created_at) VALUES (?1, ?2, ?3)", params![n, json, ts])?;
+                                }
+                                for h in &bundle.pinned {
+                                    conn.execute("INSERT OR IGNORE INTO pinned_agents (handle) VALUES (?1)", params![h])?;
+                                }
+                                for r in &bundle.alert_rules {
+                                    conn.execute("INSERT INTO alert_rules (rule_type, value, created_at) VALUES (?1, ?2, ?3)", params![r.rule_type.as_str(), &r.value, ts])?;
+                                }
+                                for (h, note) in &bundle.notes {
+                                    conn.execute("INSERT OR REPLACE INTO agent_notes (handle, note, updated_at) VALUES (?1, ?2, ?3)", params![h, note, ts])?;
+                                }
+                                for (n, e) in &bundle.aliases {
+                                    conn.execute("INSERT OR REPLACE INTO aliases (name, expansion, created_at) VALUES (?1, ?2, ?3)", params![n, e, ts])?;
+                                }
+                                for (k, c) in &bundle.hotkeys {
+                                    conn.execute("INSERT OR REPLACE INTO hotkeys (key, command, created_at) VALUES (?1, ?2, ?3)", params![k, c, ts])?;
+                                }
+                                for h in &bundle.watched {
+                                    conn.execute("INSERT OR IGNORE INTO watched_agents (handle) VALUES (?1)", params![h])?;
+                                }
+                                for (n, b) in &bundle.templates {
+                                    conn.execute("INSERT OR REPLACE INTO templates (name, body) VALUES (?1, ?2)", params![n, b])?;
+                                }
+                                Ok::<(), rusqlite::Error>(())
+                            });
                         }
                         let _ = tx.send(AppMsg::ImportOk { path, bundle });
                     });
@@ -431,6 +474,7 @@ impl Service {
                         let _ = tx.send(AppMsg::OrchSnapshotLoaded(Box::new(snapshot)));
                     });
                 }
+                // Quit consumed by main loop before execute.
                 _ => {}
             }
         }

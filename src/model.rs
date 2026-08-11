@@ -577,10 +577,6 @@ impl Model {
         self.generation += 1;
     }
 
-    /// agent 是否拥有指定标签。
-    pub fn has_tag(&self, handle: &str, tag: &str) -> bool {
-        self.tags.get(handle).map_or(false, |s| s.contains(tag))
-    }
 
     // ──── Snippets(代码片段)────
 
@@ -805,15 +801,6 @@ impl Model {
             .unwrap_or(1500)
     }
 
-    /// 获取 theme(默认 "default")。
-    pub fn get_theme(&self) -> &str {
-        self.config.get("theme").map(|s| s.as_str()).unwrap_or("default")
-    }
-
-    /// 获取 default_filter(默认空)。
-    pub fn get_default_filter(&self) -> &str {
-        self.config.get("default_filter").map(|s| s.as_str()).unwrap_or("")
-    }
 
     /// 获取排序模式(默认 by-worktree)。
     pub fn sort_mode(&self) -> SortMode {
@@ -909,11 +896,6 @@ impl SortMode {
             Self::ByName => "by-name",
         }
     }
-}
-
-/// Directory 排序: 按 sort_mode 选择策略, 保证 cursor/导航/hit_test 一致性。
-pub fn directory_sorted_handles(directory: &HashMap<String, Agent>) -> Vec<String> {
-    directory_sorted_with_mode(directory, SortMode::ByWorktree, &HashSet::new())
 }
 
 /// 带排序模式的版本(pinned 分区: 置顶 agent 排最前)。

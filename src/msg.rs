@@ -52,14 +52,10 @@ pub enum AppMsg {
     Resize { width: u16, height: u16 },
     /// 定时 tick(驱动 spinner/toast 超时/状态刷新)。
     Tick,
-    /// 退出。
-    Quit,
     /// terminal list 加载完成。
     AgentsLoaded(Vec<Agent>),
     /// last-status.json 刷新结果。
     StatusUpdated(Vec<AgentStatus>),
-    /// socket 查询请求(来自 agent 连接)。
-    SocketQuery(SocketReq),
     /// 信息 toast(非错误)。
     Info(String),
     InjectOk(usize),

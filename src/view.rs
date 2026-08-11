@@ -51,24 +51,6 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     }
     draw_status_bar(f, shell, outer[3], &theme);
 
-    // Toast 层(浮在底部上方)
-    for (i, (msg, _)) in shell.toasts.iter().enumerate().rev() {
-        if i >= 3 {
-            break; // 最多 3 条
-        }
-        let toast_y = outer[3].y.saturating_sub(1 + i as u16);
-        let toast_area = Rect {
-            x: outer[3].x,
-            y: toast_y,
-            width: outer[3].width,
-            height: 1,
-        };
-        let toast = Paragraph::new(Span::styled(
-            msg.as_str(),
-            Style::default().fg(theme.error).bg(theme.bg),
-        ));
-        f.render_widget(toast, toast_area);
-    }
 
     // 命令面板浮层(Ctrl-P 激活时覆盖在主内容上方)
     if shell.palette_active {
@@ -179,6 +161,25 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
     // Group wiring 浮层(G 键激活)
     if shell.group_overlay_active {
         draw_group_overlay(f, model, shell, area, &theme);
+    }
+
+    // Toast 层(浮在底部上方, 渲染在所有 overlay 之后以保持可见)
+    for (i, (msg, _)) in shell.toasts.iter().enumerate().rev() {
+        if i >= 3 {
+            break; // 最多 3 条
+        }
+        let toast_y = outer[3].y.saturating_sub(1 + i as u16);
+        let toast_area = Rect {
+            x: outer[3].x,
+            y: toast_y,
+            width: outer[3].width,
+            height: 1,
+        };
+        let toast = Paragraph::new(Span::styled(
+            msg.as_str(),
+            Style::default().fg(theme.error).bg(theme.bg),
+        ));
+        f.render_widget(toast, toast_area);
     }
 }
 
@@ -527,17 +528,6 @@ impl CardStyle {
     }
 }
 
-/// source → 单字符图标映射(辨识度 >> hex tag)。
-fn source_icon(source: Option<&str>) -> &'static str {
-    match source.map(|s| s.to_ascii_lowercase()).as_deref() {
-        Some(s) if s.contains("pi") || s.contains("omp") => "\u{03c0}", // π
-        Some(s) if s.contains("claude") || s.contains("cc") => "c",
-        Some(s) if s.contains("codex") => "o",
-        Some(s) if s.contains("grok") => "x",
-        Some(s) if s.contains("cursor") => "\u{25c8}",                 // ◈
-        _ => ">",
-    }
-}
 
 /// 取 preview 最后一个非空行(过滤装饰线), 给裸终端提供辨识。
 fn preview_tail(preview: Option<&str>) -> String {
@@ -858,8 +848,9 @@ fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
         f.render_widget(para, area);
 
         // 光标定位(buf 末尾 + prompt offset)
+        use unicode_width::UnicodeWidthStr;
         let cursor_offset = prompt.len() as u16;
-        let cursor_x = (shell.input_buf.len() as u16 + cursor_offset).min(area.width.saturating_sub(1));
+        let cursor_x = (UnicodeWidthStr::width(shell.input_buf.as_str()) as u16 + cursor_offset).min(area.width.saturating_sub(1));
         f.set_cursor_position((area.x + cursor_x, area.y));
     } else {
         // 非 insert_mode: 提示

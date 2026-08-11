@@ -286,24 +286,7 @@ struct WorktreePsData {
     worktrees: Vec<crate::model::WorktreePsEntry>,
 }
 
-// ───────────────────────── orchestration reply + snapshot ─────────────────────────
-
-/// orchestration reply: `orca-ide orchestration reply --id <id> --body <body> --json`。
-pub fn orchestration_reply(id: &str, body: &str) -> Result<String, String> {
-    let output = Command::new("orca-ide")
-        .args(["orchestration", "reply", "--id", id, "--body", body, "--json"])
-        .output()
-        .map_err(|e| format!("orchestration reply failed: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "orchestration reply exited {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-/// fetch run-list: `orca-ide orchestration run-list --json`。
+/// fetch run-list: `orca-ide orchestration run-list --json`.
 pub fn fetch_run_list() -> Result<Vec<crate::model::OrchRunEntry>, String> {
     let output = Command::new("orca-ide")
         .args(["orchestration", "run-list", "--json"])
@@ -357,21 +340,6 @@ pub fn fetch_gate_list() -> Result<Vec<crate::model::OrchGateEntry>, String> {
         .collect::<Vec<_>>()
         .pipe(Ok)
 }
-/// ADR-4: acknowledge/mark-read 单条消息(orchestration check --ack)。
-///
-/// 跑 `orca orchestration check --ack <delivery_id> --json`，标记该消息已读。
-pub fn orchestration_ack(delivery_id: &str) -> Result<(), String> {
-    let output = Command::new("orca-ide")
-        .args(["orchestration", "check", "--ack", delivery_id, "--json"])
-        .output()
-        .map_err(|e| format!("failed to spawn orca: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(stderr.trim().to_string());
-    }
-    Ok(())
-}
-
 /// 泛用 list 结果壳(兼容 tasks/runs/gates/items 字段名)。
 #[derive(serde::Deserialize)]
 struct GenericListResult {

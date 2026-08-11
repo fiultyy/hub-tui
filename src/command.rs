@@ -21,7 +21,7 @@ pub struct Command {
     /// 描述(如 "Activate selected agent's tab")。
     pub description: &'static str,
     /// 执行处理器:读 model+shell,返回 Cmd Vec。
-    /// 参数命令返回 Cmd::Noop 并设置 shell.input_buf / shell.insert_mode。
+    /// 参数命令返回空 vec 并设置 shell.input_buf / shell.insert_mode。
     pub handler: fn(&Model, &mut Shell) -> Vec<Cmd>,
 }
 
@@ -694,8 +694,6 @@ pub struct AcSuggestion {
     pub label: String,
     /// Full text to replace `input_buf` on accept.
     pub insert: String,
-    /// Source category badge ("prefix", "agent", "snippet", "macro", "view", "group").
-    pub source: &'static str,
 }
 
 /// All recognised input prefixes for Tab-completion.
@@ -746,7 +744,6 @@ fn autocomplete_into(q: &str, model: &crate::model::Model, out: &mut Vec<AcSugge
             out.push(AcSuggestion {
                 label: format!("{}  [prefix]", pfx),
                 insert: pfx.to_string(),
-                source: "prefix",
             });
         }
     }
@@ -772,9 +769,9 @@ fn suggest_after_prefix(pfx: &str, arg: &str, model: &crate::model::Model, out: 
     match pfx {
         "snip:" => {
             if let Some(partial) = arg.strip_prefix("rm:") {
-                push_names("snip:rm:", partial, model.snippets.keys(), "snippet", out);
+                push_names("snip:rm:", partial, model.snippets.keys(), out);
             } else {
-                push_names("snip:", arg, model.snippets.keys(), "snippet", out);
+                push_names("snip:", arg, model.snippets.keys(), out);
             }
         }
         "macro:" => {
@@ -787,7 +784,7 @@ fn suggest_after_prefix(pfx: &str, arg: &str, model: &crate::model::Model, out: 
                 .or_else(|| arg.strip_prefix("record:").map(|_| "record:"))
             {
                 let partial = &arg[sub.len()..];
-                push_names(&format!("macro:{}", sub), partial, model.macros.keys(), "macro", out);
+                push_names(&format!("macro:{}", sub), partial, model.macros.keys(), out);
             }
         }
         "view:" => {
@@ -800,14 +797,14 @@ fn suggest_after_prefix(pfx: &str, arg: &str, model: &crate::model::Model, out: 
                 .or_else(|| arg.strip_prefix("save:").map(|_| "save:"))
             {
                 let partial = &arg[sub.len()..];
-                push_names(&format!("view:{}", sub), partial, model.saved_views.keys(), "view", out);
+                push_names(&format!("view:{}", sub), partial, model.saved_views.keys(), out);
             }
         }
         "alias:" => {
             if let Some(partial) = arg.strip_prefix("rm:") {
-                push_names("alias:rm:", partial, model.aliases.keys(), "alias", out);
+                push_names("alias:rm:", partial, model.aliases.keys(), out);
             } else {
-                push_names("alias:", arg, model.aliases.keys(), "alias", out);
+                push_names("alias:", arg, model.aliases.keys(), out);
             }
         }
         "tag:" => {
@@ -836,7 +833,7 @@ fn suggest_after_prefix(pfx: &str, arg: &str, model: &crate::model::Model, out: 
                 .or_else(|| arg.strip_prefix("rm:").map(|_| "rm:"))
             {
                 let partial = &arg[sub.len()..];
-                push_names(&format!("tpl:{}", sub), partial, model.templates.keys(), "template", out);
+                push_names(&format!("tpl:{}", sub), partial, model.templates.keys(), out);
             }
         }
         _ => {}
@@ -849,7 +846,6 @@ fn push_handles(insert_pfx: &str, partial: &str, model: &crate::model::Model, ou
             out.push(AcSuggestion {
                 label: format!("{}{}", insert_pfx.trim_end(), h),
                 insert: format!("{}{} ", insert_pfx, h),
-                source: "agent",
             });
         }
     }
@@ -861,7 +857,6 @@ fn push_groups(pfx: &str, partial: &str, model: &crate::model::Model, out: &mut 
             out.push(AcSuggestion {
                 label: format!("{}{}", pfx, name),
                 insert: format!("{}{}", pfx, name),
-                source: "group",
             });
         }
     }
@@ -871,7 +866,6 @@ fn push_names<'a, I: Iterator<Item = &'a String>>(
     label_pfx: &str,
     partial: &str,
     names: I,
-    source: &'static str,
     out: &mut Vec<AcSuggestion>,
 ) {
     for name in names {
@@ -879,7 +873,6 @@ fn push_names<'a, I: Iterator<Item = &'a String>>(
             out.push(AcSuggestion {
                 label: format!("{}{}", label_pfx, name),
                 insert: format!("{}{}", label_pfx, name),
-                source,
             });
         }
     }
@@ -889,7 +882,6 @@ fn sub_cmd(pfx: &str, sub: &str) -> AcSuggestion {
     AcSuggestion {
         label: format!("{}{}", pfx, sub),
         insert: format!("{}{}", pfx, sub),
-        source: "subcmd",
     }
 }
 

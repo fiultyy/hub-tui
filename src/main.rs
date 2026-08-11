@@ -100,17 +100,24 @@ fn main() -> io::Result<()> {
 
     // T2: 启动时立即拉一次数据(ADR-5)
     // 启动时立即全量刷新(不等 5s tick): agents + status + messages
-    svc.execute(vec![
+    {
+        let mut startup_cmds = vec![
+            update::Cmd::RefreshAgents,
+            update::Cmd::RefreshStatus,
+        ];
         // Rename terminal to avoid Pi/OMP title pattern detection.
         // If Orca detects a Pi/OMP title, it classifies hub-tui as idle agent
         // and injects "You have N messages" + \r into the PTY.
-        update::Cmd::RenameTerminal {
-            handle: std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default(),
-            new_title: "hub-tui".to_string(),
-        },
-        update::Cmd::RefreshAgents,
-        update::Cmd::RefreshStatus,
-    ]);
+        // Only send RenameTerminal if handle is actually available.
+        let handle = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+        if !handle.is_empty() {
+            startup_cmds.push(update::Cmd::RenameTerminal {
+                handle,
+                new_title: "hub-tui".to_string(),
+            });
+        }
+        svc.execute(startup_cmds);
+    }
 
     run_loop(&mut term, &rx, &model, &mut shell, &mut svc, &tx)
 }

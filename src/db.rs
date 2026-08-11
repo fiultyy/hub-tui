@@ -83,11 +83,6 @@ impl Db {
         })
     }
 
-    /// Open at explicit path.
-    pub fn open_path(path: &str) -> Option<Self> {
-        Self::open(Some(path))
-    }
-
     /// Run WAL pragmas + migration.
     fn init(conn: &Connection) -> Option<()> {
         // WAL mode for concurrent reads from socket thread
@@ -323,17 +318,6 @@ impl Db {
 
     // ──── Groups ────
 
-    pub fn create_group(&self, name: &str, created_by: Option<&str>) {
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO groups (name, created_by) VALUES (?1, ?2)",
-            params![name, created_by],
-        );
-    }
-
     pub fn join_group(&self, name: &str, handle: &str) {
         let conn = match self.conn.lock() {
             Ok(c) => c,
@@ -389,23 +373,6 @@ impl Db {
         map
     }
 
-    pub fn get_group_members(&self, name: &str) -> Vec<String> {
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return vec![],
-        };
-        let mut stmt = match conn.prepare(
-            "SELECT handle FROM group_members WHERE group_name = ?1 ORDER BY joined_at",
-        ) {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
-        stmt.query_map(params![name], |row| row.get::<_, String>(0))
-            .ok()
-            .map(|r| r.filter_map(|x| x.ok()).collect())
-            .unwrap_or_default()
-    }
-
     // ──── Config ────
 
     pub fn set_config(&self, key: &str, value: &str) {
@@ -417,19 +384,6 @@ impl Db {
             "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
             params![key, value],
         );
-    }
-
-    pub fn get_config(&self, key: &str) -> Option<String> {
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return None,
-        };
-        conn.query_row(
-            "SELECT value FROM config WHERE key = ?1",
-            params![key],
-            |r| r.get(0),
-        )
-        .ok()
     }
 
     /// Load all config key-value pairs.
@@ -561,15 +515,6 @@ impl Db {
             })
         });
         rows.map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()).unwrap_or_default()
-    }
-
-    /// 清空输入历史。
-    pub fn clear_history(&self) {
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let _ = conn.execute("DELETE FROM input_history", []);
     }
 
     // ──── Pinned agents ────
@@ -1050,6 +995,23 @@ impl Db {
             DELETE FROM config WHERE key != 'db_version';
         ");
     }
+
+    /// Execute a closure inside a SQLite transaction.
+    /// The mutex is held for the entire duration, preventing interleaved writes.
+    /// On closure error (returns Err), rolls back; otherwise commits.
+    pub fn transaction<T, E>(&self, f: impl FnOnce(&Connection) -> Result<T, E>) -> Result<T, E> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let _ = conn.execute_batch("BEGIN");
+        let result = f(&conn);
+        match &result {
+            Ok(_) => { let _ = conn.execute_batch("COMMIT"); }
+            Err(_) => { let _ = conn.execute_batch("ROLLBACK"); }
+        }
+        result
+    }
     // ──── Service-compatible aliases ────
 
     /// Alias: upsert with snapshot_at param (service.rs compatibility).
@@ -1079,7 +1041,8 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("14".to_string()));
+        let config = db.get_all_config();
+        assert_eq!(config.get("db_version").unwrap(), "14");
     }
 
     #[test]
@@ -1117,8 +1080,8 @@ mod tests {
         let db = test_db();
         db.set_config("socket_path", "/tmp/orca-hub.sock");
         assert_eq!(
-            db.get_config("socket_path"),
-            Some("/tmp/orca-hub.sock".to_string())
+            db.get_all_config().get("socket_path").unwrap(),
+            "/tmp/orca-hub.sock"
         );
     }
 }
