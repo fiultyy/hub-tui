@@ -376,13 +376,8 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
         }
 
         AppMsg::MessagesDrained(all_msgs) => {
-            // hub-tui 是特殊 agent — Messages tab 只显示 hub-tui 发出或收到的消息
-            let self_h = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
-            let msgs: Vec<OrchMessage> = all_msgs.into_iter()
-                .filter(|m| m.from_handle == self_h || m.to_handle == self_h)
-                .collect();
-            let persist = msgs.clone();
-            let new_ids = model.apply_messages(msgs);
+            let persist = all_msgs.clone();
+            let new_ids = model.apply_messages(all_msgs);
             let n = new_ids.len();
             let mut cmds = vec![Cmd::PersistMessages(persist)];
             if n > 0 {

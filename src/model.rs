@@ -262,6 +262,29 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 解析 ISO8601 字符串 → epoch 秒。格式: "2026-08-11T01:17:24Z"。
+fn parse_iso8601_to_epoch(s: &str) -> Option<i64> {
+    // 简单解析: 提取 YYYY-MM-DDTHH:MM:SS
+    let s = s.trim().trim_end_matches('Z');
+    if s.len() < 19 { return None; }
+    let parts: Vec<&str> = s.split(['T', '-', ':'].as_ref()).collect();
+    if parts.len() < 6 { return None; }
+    let (y, mo, d, h, mi, se) = (
+        parts[0].parse::<i64>().ok()?,
+        parts[1].parse::<i64>().ok()?,
+        parts[2].parse::<i64>().ok()?,
+        parts[3].parse::<i64>().ok()?,
+        parts[4].parse::<i64>().ok()?,
+        parts[5].parse::<i64>().ok()?,
+    );
+    // 粗略计算(不考虑闰秒/时区, 近似够用)
+    let days = (y - 1970) * 365 + (y - 1969) / 4 + match mo {
+        1 => 0, 2 => 31, 3 => 59, 4 => 90, 5 => 120, 6 => 151,
+        7 => 181, 8 => 212, 9 => 243, 10 => 273, 11 => 304, _ => 334,
+    } + d - 1;
+    Some(days * 86400 + h * 3600 + mi * 60 + se)
+}
+
 /// 输入栏历史条目。
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
@@ -492,21 +515,40 @@ impl Model {
         self.messages.push_back(msg);
     }
 
-    /// 全量替换消息队列(inbox 快照), 返回新增消息 ID(之前不存在)。
+    /// 全量替换消息队列(inbox 快照), 返回新增消息 ID。
+    /// 过滤: 只保留最近 24h + hub-tui 自己发出或收到的, cap 100。
     pub fn apply_messages(&mut self, msgs: Vec<OrchMessage>) -> Vec<String> {
+        let self_h = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let cutoff = now_s - 86400; // 24h
+        let mut filtered: Vec<OrchMessage> = msgs.into_iter()
+            .filter(|m| {
+                // 只保留 hub-tui 发出或收到的
+                if !self_h.is_empty() && m.from_handle != self_h && m.to_handle != self_h {
+                    return false;
+                }
+                // 只保留最近 24h (parse created_at ISO8601 → epoch)
+                if let Some(ts) = parse_iso8601_to_epoch(&m.created_at) {
+                    ts >= cutoff
+                } else {
+                    true // 解析失败则保留
+                }
+            })
+            .collect();
+        // cap 100 (inbox 返回最新在前)
+        if filtered.len() > 100 {
+            filtered.truncate(100);
+        }
         let old_ids: std::collections::HashSet<&str> =
             self.messages.iter().map(|m| m.id.as_str()).collect();
-        let new_ids: Vec<String> = msgs
-            .iter()
+        let new_ids: Vec<String> = filtered.iter()
             .filter(|m| !old_ids.contains(m.id.as_str()))
             .map(|m| m.id.clone())
             .collect();
-        let mut q: VecDeque<OrchMessage> = msgs.into_iter().collect();
-        if q.len() > MESSAGES_CAP {
-            let drop_n = q.len() - MESSAGES_CAP;
-            q.drain(..drop_n);
-        }
-        self.messages = q;
+        self.messages = filtered.into_iter().collect();
         new_ids
     }
 
