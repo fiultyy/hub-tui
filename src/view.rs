@@ -240,7 +240,7 @@ fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
 /// 卡片宽度(字符)。
 pub const CARD_W: u16 = 36;
 /// 卡片内容高度(行)。
-pub const CARD_H: u16 = 4; // identity(1) + prompt(1) + tool+action(1) + meta(1)
+pub const CARD_H: u16 = 8; // identity(1) + recap(5) + tool(1) + status(1)
 /// 卡片间距(行/列)。
 pub const CARD_GAP: u16 = 1;
 /// 分区标题高度。
@@ -355,6 +355,14 @@ pub fn directory_scroll(cursor: usize, layout: &[LayoutEntry], visible_h: u16) -
     0
 }
 
+/// 统一 scroll_y 计算: draw_directory 和 hit_test_card 共用, 保证点击坐标一致。
+pub fn compute_scroll_y(shell: &crate::shell::Shell, layout: &[LayoutEntry], visible_h: u16) -> u16 {
+    match shell.manual_scroll {
+        Some(offset) => offset.min(layout.iter().map(|e| e.y + e.h).max().unwrap_or(0)),
+        None => directory_scroll(shell.cursor, layout, visible_h),
+    }
+}
+
 /// 状态分类 → 主题色映射。
 fn category_color(cat: StatusCategory, theme: &Theme) -> Color {
     match cat {
@@ -396,7 +404,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     };
     let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
     let layout = directory_layout(&sorted, model, inner.x, inner.width);
-    let scroll_y = directory_scroll(shell.cursor, &layout, inner.height);
+    let scroll_y = compute_scroll_y(shell, &layout, inner.height);
 
     for entry in &layout {
         // 内容空间剔除: 完全在视口上方/下方的项跳过
@@ -412,7 +420,8 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
             LayoutItem::Card { sorted_idx } => {
                 if let Some(agent) = sorted.get(*sorted_idx).and_then(|h| model.directory.get(h)) {
                     let is_selected = *sorted_idx == shell.cursor;
-                    let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h };
+                    let max_h = (scroll_y + inner.height).saturating_sub(entry.y);
+                    let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h.min(max_h) };
                     let unread = *model.unread_counts.get(&agent.handle).unwrap_or(&0);
                     let shell_sel = shell.selected_set.contains(&agent.handle);
                     let tags: Vec<String> = model.tags.get(&agent.handle).map(|s| {
@@ -420,7 +429,7 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
                         v.sort();
                         v
                     }).unwrap_or_default();
-                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread, model.notes.contains_key(&agent.handle), model.watched.contains(&agent.handle));
+                    draw_agent_card(f, agent, card_area, theme, is_selected, shell_sel, model.pinned.contains(&agent.handle), &tags, unread, model.notes.contains_key(&agent.handle), model.watched.contains(&agent.handle), shell.spinner_frame);
                 }
             }
         }
@@ -551,14 +560,133 @@ fn preview_tail(preview: Option<&str>) -> String {
         .to_string()
 }
 
-/// 渲染单个 agent card(4 行紧凑布局, 无空白行)。
+/// Extract real cwd from agent data. Sources tried in order:
+/// 1. PTY preview: scan for "cwd=" or "cwd:" pattern (from shell echoes)
+/// 2. Title: shell prompt pattern "yy@host: ~/path"
+/// 3. worktreePath (agent.cwd) — Orca's aggregated field, always present
+fn extract_real_cwd(agent: &crate::model::Agent) -> String {
+    // 1. Parse preview for cwd= or cwd: patterns
+    if let Some(preview) = agent.preview.as_deref() {
+        for line in preview.lines().rev().take(10) {
+            // Match patterns: cwd=/path/to, cwd:/path/to, cwd=/home/...
+            if let Some(idx) = line.find("cwd=") {
+                let rest = &line[idx + 4..];
+                let path = rest.split_whitespace().next().unwrap_or("").trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '~' && c != '.' && c != '-');
+                if path.starts_with('/') || path.starts_with('~') {
+                    return expand_tilde(path);
+                }
+            }
+            if let Some(idx) = line.find("cwd:") {
+                let rest = line[idx + 4..].trim_start();
+                let path = rest.split_whitespace().next().unwrap_or("");
+                if path.starts_with('/') || path.starts_with('~') {
+                    return expand_tilde(path);
+                }
+            }
+        }
+    }
+    // 2. Shell terminals have title like "yy@host: ~/path"
+    if let Some(title) = agent.title.as_deref() {
+        if let Some(idx) = title.rfind(": ") {
+            let path_part = &title[idx + 2..].trim();
+            if !path_part.is_empty() && (path_part.starts_with('~') || path_part.starts_with('/')) {
+                return expand_tilde(path_part);
+            }
+        }
+    }
+    // 3. Fall back to worktreePath
+    agent.cwd.clone()
+}
+
+/// Expand ~ to $HOME for display.
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            return format!("{}{}", home, &path[1..]);
+        }
+    } else if path == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+    }
+    path.to_string()
+}
+
+/// Tail-anchor a path: keep the last N segments, prefix with … if truncated.
+fn cwd_tail(path: &str, max_w: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return String::new();
+    }
+    for &keep in &[3usize, 2, 1] {
+        if segments.len() <= keep {
+            let full = segments.join("/");
+            if UnicodeWidthStr::width(full.as_str()) <= max_w {
+                return full;
+            }
+            break;
+        }
+        let tail: String = segments[segments.len() - keep..].join("/");
+        let display = format!("\u{2026}/{}", tail); // …/
+        if UnicodeWidthStr::width(display.as_str()) <= max_w {
+            return display;
+        }
+    }
+    crate::render::truncate_width(path, max_w)
+}
+
+/// Word-wrap text to fit within max_w display columns (CJK-aware).
+fn word_wrap(text: &str, max_w: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    if max_w == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    for raw_line in text.lines() {
+        let mut current = String::new();
+        for word in raw_line.split_whitespace() {
+            let candidate = if current.is_empty() { word.to_string() } else { format!("{current} {word}") };
+            if UnicodeWidthStr::width(candidate.as_str()) <= max_w {
+                current = candidate;
+            } else {
+                if !current.is_empty() {
+                    lines.push(std::mem::take(&mut current));
+                }
+                // Hard-break long words
+                let mut remainder = word.to_string();
+                while UnicodeWidthStr::width(remainder.as_str()) > max_w {
+                    let mut cut = 0usize;
+                    let mut w = 0usize;
+                    for (i, ch) in remainder.char_indices() {
+                        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                        if w + cw > max_w { break; }
+                        w += cw;
+                        cut = i + ch.len_utf8();
+                    }
+                    if cut == 0 { break; }
+                    lines.push(remainder[..cut].to_string());
+                    remainder = remainder[cut..].to_string();
+                }
+                current = remainder;
+            }
+        }
+        lines.push(current);
+    }
+    if lines.is_empty() { lines.push(String::new()); }
+    lines
+}
+/// 渲染单个 agent card(8 行布局)。
 ///
 /// 布局:
 /// ```text
-/// π title (N)                    ⠋ 2s   ← row 0: source图标+title+badge | 状态+elapsed右对齐
-/// ▌ prompt 或 ↳lastMsg 或 preview        ← row 1: 主辨识行(fallback 链)
-/// ▌ 🔧tool  toolInput截断                ← row 2: 工具+动作
-/// ▌ source · state (branch)              ← row 3: 元信息
+/// π title (N) [tag] 📝 👁              ← row 0: source图标+title+badges
+/// ▌ recap line 1 (last_assistant_msg)  ← row 1: recap body (wrapped)
+/// ▌ recap line 2                       ← row 2
+/// ▌ recap line 3                       ← row 3
+/// ▌ recap line 4                       ← row 4
+/// ▌ recap line 5                       ← row 5
+/// ▌ 🔧tool  toolInput截断              ← row 6: 工具+动作
+/// ▌ ⠋ Working 2s · …/projects/hub-tui  ← row 7: status line
 /// ```
 fn draw_agent_card(
     f: &mut Frame,
@@ -572,6 +700,7 @@ fn draw_agent_card(
     unread: usize,
     has_note: bool,
     watched: bool,
+    spinner_frame: usize,
 ) {
     use unicode_width::UnicodeWidthStr;
 
@@ -582,96 +711,59 @@ fn draw_agent_card(
 
     f.render_widget(ratatui::widgets::Clear, area);
 
-    // ── row 0: source图标 + title + badge | 状态图标 + elapsed(右对齐) ──
-    let icon = if pinned { "📌" } else if shell_selected { "\u{2713}" } else { source_icon(agent.source.as_deref()) };
-    let cat = StatusCategory::from_agent(agent);
-    let title_text = agent.title.as_deref().unwrap_or("").trim();
-    let badge_str = if unread > 0 { format!(" ({unread})") } else { String::new() };
-    let elapsed = format_elapsed(agent.last_output_at);
-    let right_part = format!("{} {}", cat.icon(), if elapsed.is_empty() { String::new() } else { elapsed });
-    let tag_badge = if let Some(first_tag) = tags.first() {
-        format!(" [{}]", first_tag)
-    } else {
-        String::new()
-    };
-    let note_badge = if has_note { " 📝" } else { "" };
-    let note_badge_w = UnicodeWidthStr::width(note_badge);
-    let watch_badge = if watched { " 👁" } else { "" };
-    let watch_badge_w = UnicodeWidthStr::width(watch_badge);
-    let tag_badge_w = UnicodeWidthStr::width(tag_badge.as_str());
-    let right_w = UnicodeWidthStr::width(right_part.as_str()) + 1; // +1 for gap
-    let badge_w = UnicodeWidthStr::width(badge_str.as_str());
-    let icon_w = UnicodeWidthStr::width(icon) + 1; // icon + space
-    let title_max = avail.saturating_sub(icon_w + badge_w + tag_badge_w + note_badge_w + watch_badge_w + right_w);
-    let title_trunc = if !title_text.is_empty() && title_max > 2 {
-        crate::render::truncate_width(title_text, title_max)
-    } else {
-        String::new()
-    };
-    let title_display_w = UnicodeWidthStr::width(title_trunc.as_str());
-    let title_pad = title_max.saturating_sub(title_display_w);
-    let mut row0_spans = vec![
-        Span::styled(icon, Style::default().fg(cs.bar_fg).add_modifier(Modifier::BOLD)),
-        Span::styled(" ", Style::default()),
-        Span::styled(title_trunc, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
-        Span::styled(" ".repeat(title_pad), Style::default()),
-    ];
-    if !badge_str.is_empty() {
-        row0_spans.push(Span::styled(
-            badge_str,
-            Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
-        ));
-    }
-    if !tag_badge.is_empty() {
-        row0_spans.push(Span::styled(
-            tag_badge,
-            Style::default().fg(theme.accent),
-        ));
-    }
-    if !note_badge.is_empty() {
-        row0_spans.push(Span::styled(
-            note_badge,
-            Style::default().fg(theme.muted),
-        ));
-    }
-    if !watch_badge.is_empty() {
-        row0_spans.push(Span::styled(
-            watch_badge,
-            Style::default().fg(theme.muted),
-        ));
-    }
-    row0_spans.push(Span::styled(" ", Style::default()));
-    row0_spans.push(Span::styled(
-        right_part,
-        Style::default().fg(theme.state_color(agent.state.as_deref())),
-    ));
-    let row0 = Line::from(row0_spans);
-
-    // ── row 1: prompt > lastAssistantMsg > preview_tail (fallback 链) ──
-    let prompt_raw = agent.prompt.as_deref().unwrap_or("").trim();
-    let msg_raw = agent.last_assistant_msg.as_deref().unwrap_or("").trim();
-    let pv_raw = preview_tail(agent.preview.as_deref());
-    let (row1_text, row1_prefix) = if !prompt_raw.is_empty() {
-        (prompt_raw.to_string(), "")
-    } else if !msg_raw.is_empty() {
-        (msg_raw.to_string(), "\u{21b3}") // ↳
-    } else if !pv_raw.is_empty() {
-        (pv_raw, "\u{2243}")               // ≃ (preview fallback 标记)
-    } else {
-        (String::new(), "")
-    };
-    let prefix_w = UnicodeWidthStr::width(row1_prefix);
-    let row1_str = crate::render::truncate_width(&row1_text, avail.saturating_sub(indent + prefix_w));
-    let row1_w = UnicodeWidthStr::width(row1_str.as_str());
-    let row1 = Line::from(vec![
-        Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
-        Span::styled(" ", bg_style),
-        Span::styled(row1_prefix, Style::default().fg(theme.muted).bg(cs.bg)),
-        Span::styled(row1_str, Style::default().fg(theme.fg).bg(cs.bg)),
-        Span::styled(" ".repeat(avail.saturating_sub(indent + prefix_w + row1_w)), bg_style),
+    // ── row 0: termID tag only ──
+    let id_tag = handle_tag(&agent.handle);
+    let id_tag_str = format!(" {} ", id_tag);
+    let id_tag_w = UnicodeWidthStr::width(id_tag_str.as_str());
+    let row0 = Line::from(vec![
+        Span::styled(id_tag_str, Style::default().bg(cs.tag_bg).fg(theme.bg).add_modifier(Modifier::BOLD)),
+        Span::styled(" ".repeat(avail.saturating_sub(id_tag_w)), bg_style),
     ]);
 
-    // ── row 2: 🔧toolName  toolInput截断 ──
+    // ── rows 1-3: recap body (last_assistant_msg > prompt > preview_tail) ──
+    let msg_raw = agent.last_assistant_msg.as_deref().unwrap_or("").trim();
+    let prompt_raw = agent.prompt.as_deref().unwrap_or("").trim();
+    let pv_raw = preview_tail(agent.preview.as_deref());
+    let recap_text = if !msg_raw.is_empty() {
+        msg_raw.to_string()
+    } else if !prompt_raw.is_empty() {
+        prompt_raw.to_string()
+    } else if !pv_raw.is_empty() {
+        pv_raw
+    } else {
+        String::new()
+    };
+    let body_h = 5usize;
+    let chars_per_line = avail.saturating_sub(indent);
+    let wrapped = if recap_text.is_empty() {
+        Vec::new()
+    } else {
+        word_wrap(&recap_text, chars_per_line)
+    };
+    let recap_fg = Style::default().fg(theme.fg).bg(cs.bg);
+    let bar_span = Span::styled("\u{258c}", Style::default().fg(cs.bar_fg).bg(cs.bg)); // ▌
+    let gap_span = Span::styled(" ", bg_style);
+    let mut recap_lines: Vec<Line> = Vec::with_capacity(body_h);
+    for i in 0..body_h {
+        if i < wrapped.len() {
+            let wl = &wrapped[i];
+            let wl_w = UnicodeWidthStr::width(wl.as_str());
+            let pad = chars_per_line.saturating_sub(wl_w);
+            recap_lines.push(Line::from(vec![
+                bar_span.clone(),
+                gap_span.clone(),
+                Span::styled(wl.clone(), recap_fg),
+                Span::styled(" ".repeat(pad), bg_style),
+            ]));
+        } else {
+            recap_lines.push(Line::from(vec![
+                bar_span.clone(),
+                Span::styled(" ".repeat(avail.saturating_sub(1)), bg_style),
+            ]));
+        }
+    }
+
+    // ── row 4: 🔧toolName  toolInput截断 ──
     let tool = agent.tool_name.as_deref().unwrap_or("");
     let tool_label = if !tool.is_empty() {
         format!("\u{1f527}{}", tool)
@@ -688,41 +780,56 @@ fn draw_agent_card(
     let input_max = avail.saturating_sub(indent + tool_label_w);
     let input_trunc = crate::render::truncate_width(&input_part, input_max);
     let input_w = UnicodeWidthStr::width(input_trunc.as_str());
-    let row2 = Line::from(vec![
-        Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
-        Span::styled(" ", bg_style),
+    let tool_row = Line::from(vec![
+        bar_span.clone(),
+        gap_span.clone(),
         Span::styled(tool_label, Style::default().fg(theme.accent).bg(cs.bg)),
         Span::styled(input_trunc, Style::default().fg(theme.muted).bg(cs.bg)),
-        Span::styled(
-            " ".repeat(avail.saturating_sub(indent + tool_label_w + input_w)),
-            bg_style,
-        ),
+        Span::styled(" ".repeat(avail.saturating_sub(indent + tool_label_w + input_w)), bg_style),
     ]);
 
-    // ── row 3: source · state (branch) ──
-    let source = agent.source.as_deref().unwrap_or("-");
-    let state = agent.state.as_deref().unwrap_or("-");
-    let branch = if !agent.branch.is_empty() {
-        format!(" ({})", agent.branch)
+    // ── row 7: status line (spinner/icon + label + 响应:elapsed · cwd_tail) ──
+    let cat = StatusCategory::from_agent(agent);
+    let status_label = cat.label();
+    let elapsed = format_elapsed(agent.last_output_at);
+    let state_color = theme.state_color(agent.state.as_deref());
+    let elapsed_display = if elapsed.is_empty() { "-".to_string() } else { elapsed };
+    let elapsed_str = format!("last:{}", elapsed_display); // last:Ns
+    let sep = " \u{00b7} "; // ·
+    // Animated spinner for Working state, static icon otherwise
+    let icon_str: String = if cat == StatusCategory::Working {
+        spinner_char(spinner_frame).to_string()
     } else {
-        String::new()
+        cat.icon().to_string()
     };
-    let meta_str = crate::render::truncate_width(
-        &format!("{} \u{00b7} {}{}", source, state, branch),
-        avail.saturating_sub(indent),
-    );
-    let meta_w = UnicodeWidthStr::width(meta_str.as_str());
-    let row3 = Line::from(vec![
-        Span::styled("▌", Style::default().fg(cs.bar_fg).bg(cs.bg)),
+    let icon_w = UnicodeWidthStr::width(icon_str.as_str());
+    let label_w = UnicodeWidthStr::width(status_label);
+    let elapsed_w = UnicodeWidthStr::width(elapsed_str.as_str());
+    let sep_w = UnicodeWidthStr::width(sep);
+    let fixed_w = indent + icon_w + 1 + label_w + 1 + elapsed_w + sep_w;
+    let cwd_max = avail.saturating_sub(fixed_w);
+    let real_cwd = extract_real_cwd(agent);
+    let cwd_display = cwd_tail(&real_cwd, cwd_max);
+    let cwd_w = UnicodeWidthStr::width(cwd_display.as_str());
+    let status_row = Line::from(vec![
+        bar_span,
+        gap_span,
+        Span::styled(icon_str, Style::default().fg(state_color).bg(cs.bg)),
         Span::styled(" ", bg_style),
-        Span::styled(meta_str, Style::default().fg(theme.muted).bg(cs.bg)),
-        Span::styled(
-            " ".repeat(avail.saturating_sub(indent + meta_w)),
-            bg_style,
-        ),
+        Span::styled(status_label, Style::default().fg(state_color).bg(cs.bg)),
+        Span::styled(" ", bg_style),
+        Span::styled(elapsed_str, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(sep, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(cwd_display, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(" ".repeat(avail.saturating_sub(fixed_w + cwd_w)), bg_style),
     ]);
 
-    let content = ratatui::widgets::Paragraph::new(vec![row0, row1, row2, row3]);
+    let content = ratatui::widgets::Paragraph::new(vec![row0]
+        .into_iter()
+        .chain(recap_lines)
+        .chain(std::iter::once(tool_row))
+        .chain(std::iter::once(status_row))
+        .collect::<Vec<_>>());
     f.render_widget(content, area);
 }
 
@@ -1586,7 +1693,7 @@ fn draw_config_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, 
 
     // 已知配置项(带描述和默认值)
     let known: &[(&str, &str, &str)] = &[
-        ("refresh_interval_ms", "Agent refresh interval (ms)", "5000"),
+        ("refresh_interval_ms", "Agent refresh interval (ms)", "1500"),
         ("theme", "UI color theme (dark/default)", "default"),
         ("default_filter", "Default directory filter query", ""),
     ];
