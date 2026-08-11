@@ -1124,9 +1124,12 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return all_cmds;
     }
     if let Some((to, rest)) = buf.strip_prefix("to:").and_then(|s| s.split_once(' ')) {
-        let subject = rest.to_string();
-        let body = String::new();
-        return vec![Cmd::OrchestrationSend { to: to.to_string(), subject, body }];
+        let subject = rest.trim().to_string();
+        if subject.is_empty() {
+            shell.push_toast("to: message cannot be empty".into());
+            return vec![];
+        }
+        return vec![Cmd::OrchestrationSend { to: to.to_string(), subject, body: String::new() }];
     }
 
     // 解析 "pty:handle text" 格式(PTY 直接注入)
