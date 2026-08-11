@@ -226,7 +226,8 @@ fn cmd_broadcast(req: &crate::msg::SocketReq, model: &Arc<RwLock<Model>>) -> Soc
     let mut ok_count = 0usize;
     let mut fail_count = 0usize;
     for handle in &members {
-        match crate::transport::orchestration_send(handle, &subject, &message) {
+        let text = format!("[{}] {}", name, message);
+        match crate::transport::terminal_send(handle, &text) {
             Ok(_) => ok_count += 1,
             Err(_) => fail_count += 1,
         }

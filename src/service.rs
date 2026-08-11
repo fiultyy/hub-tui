@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::db::Db;
 use crate::msg::AppMsg;
-use crate::model::{Agent, OrchMessage};
+use crate::model::Agent;
 use crate::transport;
 
 /// 终端列表刷新间隔(ADR-7: 5s)。
@@ -46,8 +46,6 @@ pub struct DbBootstrap {
     pub agents: Vec<Agent>,
     /// Persisted groups from last session.
     pub groups: HashMap<String, HashSet<String>>,
-    /// Cached messages from last session.
-    pub messages: Vec<OrchMessage>,
     /// 配置 key-value pairs.
     pub config: HashMap<String, String>,
 }
@@ -63,7 +61,6 @@ impl Service {
             || DbBootstrap {
                 agents: Vec::new(),
                 groups: HashMap::new(),
-                messages: Vec::new(),
                 config: HashMap::new(),
             },
             |db| {
@@ -74,9 +71,8 @@ impl Service {
                         .into_iter()
                         .map(|(k, v)| (k, v.into_iter().collect()))
                         .collect(),
-                    messages: db.get_recent_messages(500),
                     config: db.get_all_config(),
-                 }
+                }
             },
         );
 
@@ -108,23 +104,7 @@ impl Service {
             );
         }
     }
-
-    /// Persist messages to DB (call from main loop after MessagesDrained is processed).
-    pub fn persist_messages(&self, msgs: &[OrchMessage]) {
-        let Some(ref db) = self.db else { return };
-        for msg in msgs {
-            db.insert_message(msg, false);
-        }
-    }
-
-    /// Persist a locally-sent message to DB.
-    pub fn persist_local_message(&self, msg: &OrchMessage) {
-        if let Some(ref db) = self.db {
-            db.insert_message(msg, true);
-        }
-    }
-
-    /// Persist group join to DB.
+    /// Persist group join to DB。
     pub fn persist_group_join(&self, name: &str, handle: &str) {
         if let Some(ref db) = self.db {
             db.join_group(name, handle);
@@ -180,50 +160,8 @@ impl Service {
                         }
                     });
                 }
-                crate::update::Cmd::RefreshUnread => {
-                    let tx = self.tx.clone();
-                    let lock = Arc::clone(&self.cli_lock);
-                    thread::spawn(move || {
-                        let _guard = lock.lock();
-                        match transport::orchestration_inbox_unread() {
-                            Ok(counts) => {
-                                let _ = tx.send(AppMsg::UnreadUpdated(counts));
-                            }
-                            Err(_) => {}
-                        }
-                    });
-                }
                 crate::update::Cmd::WriteDirectory => {
                     // Stub: main.rs writes hub-directory.json directly.
-                }
-                crate::update::Cmd::OrchestrationSend { to, subject, body } => {
-                    let tx = self.tx.clone();
-                    let lock = Arc::clone(&self.cli_lock);
-                    thread::spawn(move || {
-                        let _guard = lock.lock();
-                        match transport::orchestration_send(&to, &subject, &body) {
-                            Ok(id) => {
-                                let _ = tx.send(AppMsg::SendOk(id));
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppMsg::SendFailed(e));
-                            }
-                        }
-                    });
-                }
-                crate::update::Cmd::DrainMessages => {
-                    let tx = self.tx.clone();
-                    let lock = Arc::clone(&self.cli_lock);
-                    thread::spawn(move || {
-                        let _guard = lock.lock();
-                        // 拉 inbox 全量(hub-tui 发出的消息历史)
-                        match transport::orchestration_check() {
-                            Ok(msgs) => {
-                                let _ = tx.send(AppMsg::MessagesDrained(msgs));
-                            }
-                            Err(_) => {}
-                        }
-                    });
                 }
                 crate::update::Cmd::SwitchTerminal { handle } => {
                     let lock = Arc::clone(&self.cli_lock);
@@ -238,20 +176,6 @@ impl Service {
                 }
                 crate::update::Cmd::PersistAgents(agents) => {
                     self.persist_agents(&agents);
-                }
-                crate::update::Cmd::PersistMessages(msgs) => {
-                    self.persist_messages(&msgs);
-                }
-                crate::update::Cmd::ResetMessages => {
-                    let lock = Arc::clone(&self.cli_lock);
-                    thread::spawn(move || {
-                        let _guard = lock.lock();
-                        let _ = std::process::Command::new("orca-ide")
-                            .args(["orchestration", "reset", "--messages", "--json"])
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .status();
-                    });
                 }
                 crate::update::Cmd::PersistActivityEvent(ev) => {
                     if let Some(db) = &self.db {
@@ -489,49 +413,12 @@ impl Service {
                         }
                     });
                 }
-                crate::update::Cmd::GroupBroadcast { name, message, handles } => {
-                    let tx = self.tx.clone();
-                    thread::spawn(move || {
-                        let results = transport::group_broadcast(
-                            &handles,
-                            &format!("[{name}]"),
-                            &message,
-                        );
-                        let ok = results.iter().filter(|r| r.is_ok()).count();
-                        let fail = results.len() - ok;
-                        let _ = tx.send(AppMsg::GroupActionOk(
-                            format!("Broadcast to {name}: {ok} ok, {fail} failed"),
-                        ));
-                    });
-                }
                 crate::update::Cmd::SetConfig { key, value } => {
                     // 同步写 DB,然后回灌到 model
                     if let Some(db) = &self.db {
                         db.set_config(&key, &value);
                     }
                     let _ = self.tx.send(AppMsg::ConfigUpdated { key, value });
-                }
-                crate::update::Cmd::OrchestrationReply { id, body } => {
-                    let tx = self.tx.clone();
-                    let lock = Arc::clone(&self.cli_lock);
-                    thread::spawn(move || {
-                        let _guard = lock.lock();
-                        match transport::orchestration_reply(&id, &body) {
-                            Ok(_) => { let _ = tx.send(AppMsg::SendOk(id)); }
-                            Err(e) => { let _ = tx.send(AppMsg::SendFailed(e)); }
-                        }
-                    });
-                }
-                crate::update::Cmd::MarkRead { delivery_id } => {
-                    let tx = self.tx.clone();
-                    let lock = Arc::clone(&self.cli_lock);
-                    thread::spawn(move || {
-                        let _guard = lock.lock();
-                        match transport::orchestration_ack(&delivery_id) {
-                            Ok(()) => { let _ = tx.send(AppMsg::AckOk(delivery_id)); }
-                            Err(e) => { let _ = tx.send(AppMsg::AckFailed(e)); }
-                        }
-                    });
                 }
                 crate::update::Cmd::RefreshOrchTasks => {
                     let tx = self.tx.clone();

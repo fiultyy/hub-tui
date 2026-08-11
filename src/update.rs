@@ -3,35 +3,25 @@
 //! `fn update(model, shell, msg) -> Vec<Cmd>`: 纯函数, **绝不 IO**。
 //! - Model/Shell 改在原地(&mut); Cmd 返回 Vec 给 service.rs 执行(范式 3 fire-and-forget)。
 //! - 状态转移穷尽 match AppMsg 所有 variant。
-//! - send 回灌: Cmd::OrchestrationSend → service spawn → AppMsg::SendOk/SendFailed 回来(ADR-7)。
+//! - send 回灌: Cmd::TerminalSend → service spawn → 结果回灌(ADR-7)。
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::msg::AppMsg;
-use crate::model::{directory_sorted_with_mode, SortMode, Agent, OrchMessage, Model, EventCategory, EventSeverity, StatusCategory, ViewSnapshot};
+use crate::model::{directory_sorted_with_mode, SortMode, Agent, Model, EventCategory, EventSeverity, StatusCategory, ViewSnapshot};
 use crate::shell::{FocusTarget, Shell, Tab};
 use crate::view::{directory_layout, directory_scroll, LayoutItem};
 
 // ───────────────────────── Cmd(意图声明, service 执行) ─────────────────────────
 
 /// 异步命令(范式 3)。update 返回 Vec<Cmd>, service.rs 逐个 spawn std::thread 执行。
-/// 终态经 AppMsg 回灌(SendOk/SendFailed), 绝不阻塞主 loop。
+/// 终态经 AppMsg 回灌, 绝不阻塞主 loop。
 #[derive(Debug)]
 pub enum Cmd {
     /// spawn: `orca-ide terminal list --json` 刷新通信录。
     RefreshAgents,
     /// poll: `last-status.json` mtime 变化则 parse 并合并(ADR-5)。
     RefreshStatus,
-    /// 编排发送(ADR-7: 声明意图, service spawn 执行, 结果回灌)。
-    OrchestrationSend {
-        to: String,
-        subject: String,
-        body: String,
-    },
-    /// spawn: `orca orchestration check --json` drain inbox(ADR-4)。
-    DrainMessages,
-    /// spawn: `orca-ide orchestration inbox --json` 刷新全量未读数。
-    RefreshUnread,
     /// 写 `~/.orca/hub-directory.json` 快照(ADR-6)。
     WriteDirectory,
     /// socket 查询处理(ADR-3)。
@@ -40,8 +30,6 @@ pub enum Cmd {
     SwitchTerminal { handle: String },
     /// 持久化 agents 到 SQLite(非 IO: service.execute 内同步写 DB)。
     PersistAgents(Vec<Agent>),
-    /// 持久化消息到 SQLite。
-    PersistMessages(Vec<OrchMessage>),
     /// 持久化群组加入。
     PersistGroupJoin { name: String, handle: String },
     /// 持久化群组退出。
@@ -56,16 +44,10 @@ pub enum Cmd {
     ReadTerminal { handle: String },
     /// spawn: worktree ps 编排摘要。
     RefreshWorktreePs,
-    /// 群组 broadcast: 向群组所有成员发消息(handles 由 update 从 model 提取)。
-    GroupBroadcast { name: String, message: String, handles: Vec<String> },
     /// spawn: 创建新终端(orca terminal create)。
     CreateTerminal { worktree: Option<String>, command: String, title: Option<String> },
     /// 持久化配置项到 DB(同步写, 结果回灌 ConfigUpdated)。
     SetConfig { key: String, value: String },
-    /// spawn: orchestration reply --id <msg_id> --body <text>。
-    OrchestrationReply { id: String, body: String },
-    /// spawn: orchestration check --ack <delivery_id> 标记消息已读。
-    MarkRead { delivery_id: String },
     /// spawn: 并行刷新 run-list + task-list + gate-list 编排快照。
     RefreshOrchTasks,
     /// 持久化活动日志事件到 SQLite(service 同步写)。
@@ -122,8 +104,6 @@ pub enum Cmd {
     RemoveTemplate { name: String },
     /// 无操作。
     Noop,
-    /// spawn: `orca-ide orchestration reset --messages`。
-    ResetMessages,
     /// 退出。
     Quit,
 }
@@ -206,11 +186,6 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             vec![]
         }
 
-        // ──── 鼠标点击 ✉ 按钮(直接发消息, 由 MouseLeftClick 内部检测派发) ────
-        AppMsg::MouseMsgClick { x: _, y: _ } => {
-            // 已在 MouseLeftClick handler 中处理, 这里不会到达
-            vec![]
-        }
 
         // ──── 鼠标滚轮(滚动视口, 不改变 cursor) ────
         AppMsg::MouseScrollUp => {
@@ -239,17 +214,9 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             let mut cmds = Vec::new();
             // 每次 tick 都刷新 status(轻量 stat)
             cmds.push(Cmd::RefreshStatus);
-            // Write state="working" to last-status.json to prevent Orca
-            // from injecting "You have N messages" into hub-tui's PTY.
-            let self_h = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
-            if let Some(agent) = model.directory.get(&self_h) {
-                crate::transport::write_status_working(&agent.pane_key, &agent.worktree_id, &agent.tab_id);
-            }
             // 周期性刷新 agents(可配置间隔)
             if should_refresh_agents(model, shell) {
                 cmds.push(Cmd::RefreshAgents);
-                cmds.push(Cmd::DrainMessages);
-                cmds.push(Cmd::RefreshUnread);
             }
             // ── Macro replay pump: one key per tick (50ms = 20 keys/sec) ──
             if !shell.replay_queue.is_empty() {
@@ -352,47 +319,6 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             cmds
         }
 
-        // ──── inbox 未读数刷新 ────
-        AppMsg::UnreadUpdated(counts) => {
-            model.apply_unread(counts);
-            vec![Cmd::WriteDirectory]
-        }
-
-        // ──── 编排发送成功(ADR-7 回灌) ────
-        AppMsg::SendOk(id) => {
-            shell.push_toast(format!("Sent: {id}"));
-            vec![note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Sent: {id}"))]
-        }
-
-        // ──── 编排发送失败(ADR-7 回灌) ────
-        AppMsg::SendFailed(e) => {
-            shell.push_toast(format!("Send failed: {e}"));
-            vec![note_event(model, EventSeverity::Error, EventCategory::Message, "system", format!("Send failed: {e}"))]
-        }
-
-        // ──── mark-read 成功(ADR-7 回灌) ────
-        AppMsg::AckOk(id) => {
-            shell.push_toast(format!("Marked read: {id}"));
-            // 刷新未读数
-            vec![Cmd::RefreshUnread, note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Marked read: {id}"))]
-        }
-
-        // ──── mark-read 失败 ────
-        AppMsg::AckFailed(e) => {
-            shell.push_toast(format!("Ack failed: {e}"));
-            vec![note_event(model, EventSeverity::Error, EventCategory::Message, "system", format!("Ack failed: {e}"))]
-        }
-
-        AppMsg::MessagesDrained(all_msgs) => {
-            let persist = all_msgs.clone();
-            let new_ids = model.apply_messages(all_msgs);
-            let n = new_ids.len();
-            let mut cmds = vec![Cmd::PersistMessages(persist)];
-            if n > 0 {
-                cmds.push(note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Sent/received {n} messages")));
-            }
-            cmds
-        }
 
         AppMsg::SocketQuery(req) => {
             vec![Cmd::QuerySocket { req }]
@@ -429,11 +355,6 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
                 Cmd::WriteDirectory,
                 note_event(model, EventSeverity::Info, EventCategory::Agent, &handle, format!("Created: {label}")),
             ]
-        }
-        // ──── 群组操作成功 ────
-        AppMsg::GroupActionOk(msg) => {
-            shell.push_toast(msg.clone());
-            vec![Cmd::RefreshAgents, note_event(model, EventSeverity::Info, EventCategory::Group, "system", msg)]
         }
 
         // ──── 信息 toast ────
@@ -636,9 +557,9 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             return vec![];
         }
 
-        // / 进入过滤模式(Directory tab / Messages tab)
+        // / 进入过滤模式(Directory tab)
         (KeyCode::Char('/'), KeyModifiers::NONE)
-            if !shell.insert_mode && matches!(shell.tab, Tab::Directory | Tab::Messages) =>
+            if !shell.insert_mode && matches!(shell.tab, Tab::Directory) =>
         {
             shell.filter_active = true;
             shell.filter_query = Some(String::new());
@@ -823,10 +744,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             shell.focus_mode = false;
             shell.input_buf.clear();
             // 同步 focus 到对应 tab
-            shell.focus = match shell.tab {
-                Tab::Directory => FocusTarget::Directory,
-                Tab::Messages => FocusTarget::Messages,
-            };
+            shell.focus = FocusTarget::Directory;
             return vec![];
         }
 
@@ -838,10 +756,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
                 shell.history_cursor = None;
                 shell.saved_input.clear();
                 // focus 回当前 tab
-                shell.focus = match shell.tab {
-                    Tab::Directory => FocusTarget::Directory,
-                    Tab::Messages => FocusTarget::Messages,
-                };
+                shell.focus = FocusTarget::Directory;
                 return vec![];
             }
         }
@@ -896,14 +811,11 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             vec![]
         }
 
-        // g: 切到下一个 tab (Directory↔Messages)
+        // g: 切到下一个 tab (only Directory now)
         (KeyCode::Char('g'), KeyModifiers::NONE) => {
             shell.tab = shell.tab.next();
             shell.cursor = 0;
-            shell.focus = match shell.tab {
-                Tab::Directory => FocusTarget::Directory,
-                Tab::Messages => FocusTarget::Messages,
-            };
+            shell.focus = FocusTarget::Directory;
             vec![]
         }
 
@@ -928,30 +840,15 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             vec![]
         }
 
-        // Enter: 按 tab 分流
-        (KeyCode::Enter, KeyModifiers::NONE) => match shell.tab {
-            Tab::Directory => {
-                // 选中 agent, 进入输入模式准备发送
-                let selected_handle = selected_agent_handle(model, shell);
-                if let Some(handle) = selected_handle {
-                    shell.insert_mode = true;
-                    shell.focus = FocusTarget::Input;
-                    shell.input_buf = format!("to:{handle} ");
-                }
-                vec![]
+        // Enter: 选中 agent, 进入输入模式准备发送
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            let selected_handle = selected_agent_handle(model, shell);
+            if let Some(handle) = selected_handle {
+                shell.insert_mode = true;
+                shell.focus = FocusTarget::Input;
+                shell.input_buf = format!("to:{handle} ");
             }
-            Tab::Messages => {
-                // hub-tui 单向发送: Enter 预填 to:<cursor_msg_from> 进入输入模式
-                let msgs: Vec<_> = model.messages.iter().rev().collect();
-                if let Some(msg) = msgs.get(shell.cursor) {
-                    // 默认回复给该消息的发送者
-                    let to = &msg.from_handle;
-                    shell.insert_mode = true;
-                    shell.focus = FocusTarget::Input;
-                    shell.input_buf = format!("to:{to} ");
-                }
-                vec![]
-            }
+            vec![]
         }
         // s(in Directory tab): switch/activate selected agent's tab
         (KeyCode::Char('s'), KeyModifiers::NONE) => {
@@ -1054,15 +951,9 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
 }
 /// Restore a ViewSnapshot onto Shell state.
 fn apply_view_snapshot(shell: &mut Shell, snap: ViewSnapshot) -> Vec<Cmd> {
-    // Restore tab
-    shell.tab = match snap.tab.as_str() {
-        "messages" => Tab::Messages,
-        _ => Tab::Directory,
-    };
-    shell.focus = match shell.tab {
-        Tab::Directory => FocusTarget::Directory,
-        Tab::Messages => FocusTarget::Messages,
-    };
+    // Restore tab (always Directory now)
+    shell.tab = Tab::Directory;
+    shell.focus = FocusTarget::Directory;
     shell.cursor = 0;
 
     // Restore filter
@@ -1241,7 +1132,7 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         };
         let n = handles.len();
         shell.push_toast(format!("Broadcasting to {n} agent(s)"));
-        return vec![Cmd::GroupBroadcast { name: "selected".to_string(), message, handles }];
+        return handles.into_iter().map(|h| Cmd::TerminalSend { handle: h, text: message.clone() }).collect();
     }
 
     // 解析 "create:command" 格式(在当前 worktree 创建终端)
@@ -1298,13 +1189,6 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![];
     }
 
-    // 解析 "reply:<msg_id> <body>" 格式(回复消息)
-    if let Some((id, body)) = buf.strip_prefix("reply:").and_then(|s| s.split_once(' ')) {
-        if body.is_empty() {
-            return vec![];
-        }
-        return vec![Cmd::OrchestrationReply { id: id.to_string(), body: body.to_string() }];
-    }
 
     // tag:add:handle tagname / tag:rm:handle tagname / tag:handle tagname (default add)
     if let Some(rest) = buf.strip_prefix("tag:") {
@@ -1340,11 +1224,7 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         }
         let handles: Vec<String> = handles_str.split(',').map(|s| s.trim().to_string()).collect();
         shell.push_toast(format!("Batch sending to {} agents...", handles.len()));
-        return handles.into_iter().map(|h| Cmd::OrchestrationSend {
-            to: h,
-            subject: msg.to_string(),
-            body: String::new(),
-        }).collect();
+        return handles.into_iter().map(|h| Cmd::TerminalSend { handle: h, text: msg.to_string() }).collect();
     }
 
     // tagged:<tagname> <message> — send to all agents with given tag
@@ -1360,9 +1240,7 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             return vec![];
         }
         shell.push_toast(format!("tagged batch to {} agents ({tag})", handles.len()));
-        return handles.into_iter().map(|h| Cmd::OrchestrationSend {
-            to: h, subject: msg.to_string(), body: String::new(),
-        }).collect();
+        return handles.into_iter().map(|h| Cmd::TerminalSend { handle: h, text: msg.to_string() }).collect();
     }
 
     // snip:name text... / snip:rm:name — save/remove snippet
@@ -1515,7 +1393,7 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             let name = name.trim().to_string();
             if name.is_empty() { return vec![]; }
             let snapshot = ViewSnapshot {
-                tab: match shell.tab { Tab::Directory => "directory", Tab::Messages => "messages" }.into(),
+                tab: "directory".into(),
                 filter_query: shell.filter_query.clone(),
                 sort_mode: model.sort_mode().label().to_string(),
                 selected_set: shell.selected_set.iter().cloned().collect(),
@@ -1791,12 +1669,6 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![];
     }
 
-    // reset:messages — purge all orchestration messages (clears Orca unread prompt)
-    if buf.trim() == "reset:messages" {
-        shell.push_toast("Resetting orchestration messages...".into());
-        model.messages.clear();
-        return vec![Cmd::ResetMessages];
-    }
     vec![]
 }
 
@@ -1807,10 +1679,7 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
         (KeyCode::Enter, KeyModifiers::NONE) => {
             let buf = std::mem::take(&mut _shell.input_buf);
             _shell.insert_mode = false;
-            _shell.focus = match _shell.tab {
-                Tab::Directory => FocusTarget::Directory,
-                Tab::Messages => FocusTarget::Messages,
-            };
+            _shell.focus = FocusTarget::Directory;
             _shell.history_cursor = None; // reset recall on submit
             let mut cmds = dispatch_input(model, _shell, buf.clone());
             if !cmds.is_empty() && !buf.trim().is_empty() {
@@ -1987,17 +1856,6 @@ fn dispatch_search_jump(model: &mut Model, shell: &mut Shell) -> Vec<Cmd> {
                 shell.tab = Tab::Directory;
                 shell.cursor = idx;
                 shell.focus = FocusTarget::Directory;
-                shell.filter_active = false;
-                shell.filter_query = None;
-            }
-            vec![]
-        }
-        JumpTarget::MessageId(id) => {
-            let msgs: Vec<_> = model.messages.iter().rev().collect();
-            if let Some(idx) = msgs.iter().position(|m| m.id == id) {
-                shell.tab = Tab::Messages;
-                shell.cursor = idx;
-                shell.focus = FocusTarget::Messages;
                 shell.filter_active = false;
                 shell.filter_query = None;
             }
@@ -2371,7 +2229,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                     } else {
                         let n = handles.len();
                         shell.push_toast(format!("🤝 Handshake: broadcasting to {n} members of '{gname}'"));
-                        vec![Cmd::GroupBroadcast { name: gname.clone(), message: "hub-tui handshake".to_string(), handles }]
+                        handles.into_iter().map(|h| Cmd::TerminalSend { handle: h, text: "hub-tui handshake".to_string() }).collect()
                     }
                 } else {
                     vec![]
@@ -2584,17 +2442,7 @@ fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String
                 std::borrow::Cow::Owned(sorted)
             }
         }
-        Tab::Messages => {
-            let all_ids: Vec<String> = model.messages.iter().map(|m| m.id.clone()).collect();
-            if shell.filter_active {
-                let q = shell.filter_query.as_deref().unwrap_or("");
-                std::borrow::Cow::Owned(crate::model::messages_filter_ids(
-                    &model.messages, q,
-                ))
-            } else {
-                std::borrow::Cow::Owned(all_ids)
-            }
-        }
+        _ => std::borrow::Cow::Owned(vec![]),
     }
 }
 
@@ -2738,22 +2586,6 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
-    fn make_test_msg(id: &str, from: &str, to: &str, subject: &str) -> crate::model::OrchMessage {
-        crate::model::OrchMessage {
-            id: id.to_string(),
-            from_handle: from.to_string(),
-            to_handle: to.to_string(),
-            subject: subject.to_string(),
-            body: String::new(),
-            msg_type: "status".to_string(),
-            priority: String::new(),
-            thread_id: None,
-            payload: None,
-            read: 0,
-            sequence: 0,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        }
-    }
 
     #[test]
     fn update_quit_on_q() {
@@ -2780,9 +2612,6 @@ mod tests {
         let mut model = Model::new();
         let mut shell = Shell::new();
         assert_eq!(shell.tab, Tab::Directory);
-
-        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Tab)));
-        assert_eq!(shell.tab, Tab::Messages);
 
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Tab)));
         assert_eq!(shell.tab, Tab::Directory);
@@ -2833,19 +2662,6 @@ mod tests {
         assert!(cmds.is_empty());
     }
 
-    #[test]
-    fn update_send_ok_toast() {
-        let mut model = Model::new();
-        let mut shell = Shell::new();
-        let cmds = update(
-            &mut model,
-            &mut shell,
-            AppMsg::SendOk("msg-123".to_string()),
-        );
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistActivityEvent(_))));
-        assert_eq!(shell.toasts.len(), 1);
-        assert!(shell.toasts[0].0.contains("msg-123"));
-    }
 
     #[test]
     fn update_toast_drain() {
@@ -2909,59 +2725,6 @@ mod tests {
     }
 
 
-    #[test]
-    fn update_messages_filter_key() {
-        let mut model = Model::new();
-        let mut shell = Shell::new();
-        shell.tab = Tab::Messages;
-
-        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('/'))));
-        assert!(shell.filter_active);
-        assert!(shell.filter_query.is_some());
-    }
-
-    #[test]
-    fn update_ack_ok_toast() {
-        let mut model = Model::new();
-        let mut shell = Shell::new();
-        let cmds = update(&mut model, &mut shell, AppMsg::AckOk("m1".to_string()));
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::RefreshUnread)));
-        assert_eq!(shell.toasts.len(), 1);
-        assert!(shell.toasts[0].0.contains("Marked read"));
-    }
-
-    #[test]
-    fn update_ack_failed_toast() {
-        let mut model = Model::new();
-        let mut shell = Shell::new();
-        let cmds = update(&mut model, &mut shell, AppMsg::AckFailed("err".to_string()));
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::PersistActivityEvent(_))));
-        assert_eq!(shell.toasts.len(), 1);
-    }
-
-    #[test]
-    fn messages_filter_ids_by_from() {
-        let mut model = Model::new();
-        model.push_message(make_test_msg("m1", "alice", "bob", "hello"));
-        model.push_message(make_test_msg("m2", "bob", "alice", "world"));
-        model.push_message(make_test_msg("m3", "carol", "alice", "test"));
-
-        let ids = crate::model::messages_filter_ids(&model.messages, "from:alice");
-        assert_eq!(ids, vec!["m1"]);
-
-        let all = crate::model::messages_filter_ids(&model.messages, "");
-        assert_eq!(all.len(), 3);
-    }
-
-    #[test]
-    fn messages_filter_ids_fuzzy() {
-        let mut model = Model::new();
-        model.push_message(make_test_msg("m1", "alice", "bob", "hello world"));
-        model.push_message(make_test_msg("m2", "bob", "alice", "goodbye"));
-
-        let ids = crate::model::messages_filter_ids(&model.messages, "hello");
-        assert_eq!(ids, vec!["m1"]);
-    }
 
     // ── quick-jump digit 1-9 tests ──
 
@@ -3032,14 +2795,6 @@ mod tests {
         assert!(shell.toasts.is_empty()); // no toast
     }
 
-    #[test]
-    fn digit_jump_ignored_on_non_directory_tab() {
-        let mut model = Model::new();
-        let mut shell = Shell::new();
-        shell.tab = Tab::Messages;
-        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('1'))));
-        assert!(shell.toasts.is_empty());
-    }
 
     #[test]
     fn digit_jump_toast_shows_tilde_for_home() {

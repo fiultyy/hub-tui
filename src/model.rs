@@ -1,6 +1,6 @@
 //! model.rs —— 范式 1/5 数据投影层(ADR-1 范式 5: 数据态/运行态分离)。
 //!
-//! Model 只持纯数据态(directory/groups/messages)。无 IO、无运行态、无渲染缓存。
+//! Model 只持纯数据态(directory/groups/events)。无 IO、无运行态、无渲染缓存。
 //! view 读 &Model 不 &mut。增量更新 apply_agents / apply_status 就地改 HashMap。
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -261,30 +261,6 @@ pub fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
-
-/// 解析 ISO8601 字符串 → epoch 秒。格式: "2026-08-11T01:17:24Z"。
-fn parse_iso8601_to_epoch(s: &str) -> Option<i64> {
-    // 简单解析: 提取 YYYY-MM-DDTHH:MM:SS
-    let s = s.trim().trim_end_matches('Z');
-    if s.len() < 19 { return None; }
-    let parts: Vec<&str> = s.split(['T', '-', ':'].as_ref()).collect();
-    if parts.len() < 6 { return None; }
-    let (y, mo, d, h, mi, se) = (
-        parts[0].parse::<i64>().ok()?,
-        parts[1].parse::<i64>().ok()?,
-        parts[2].parse::<i64>().ok()?,
-        parts[3].parse::<i64>().ok()?,
-        parts[4].parse::<i64>().ok()?,
-        parts[5].parse::<i64>().ok()?,
-    );
-    // 粗略计算(不考虑闰秒/时区, 近似够用)
-    let days = (y - 1970) * 365 + (y - 1969) / 4 + match mo {
-        1 => 0, 2 => 31, 3 => 59, 4 => 90, 5 => 120, 6 => 151,
-        7 => 181, 8 => 212, 9 => 243, 10 => 273, 11 => 304, _ => 334,
-    } + d - 1;
-    Some(days * 86400 + h * 3600 + mi * 60 + se)
-}
-
 /// 输入栏历史条目。
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
@@ -298,38 +274,8 @@ pub struct HistoryEntry {
 /// 历史上限(内存; DB 保留更多)。
 pub const HISTORY_CAP: usize = 500;
 
-/// 编排消息(对齐 orca orchestration inbox --json)。
-#[derive(Clone, Debug, serde::Deserialize)]
-pub struct OrchMessage {
-    pub id: String,
-    pub from_handle: String,
-    pub to_handle: String,
-    pub subject: String,
-    pub body: String,
-    #[serde(rename = "type", default = "default_msg_type")]
-    pub msg_type: String,
-    #[serde(default)]
-    pub priority: String,
-    #[serde(default)]
-    pub thread_id: Option<String>,
-    #[serde(default)]
-    pub payload: Option<String>,
-    #[serde(default)]
-    pub read: i64,
-    #[serde(default)]
-    pub sequence: i64,
-    #[serde(default, rename = "created_at")]
-    pub created_at: String,
-}
-
-fn default_msg_type() -> String {
-    "status".to_string()
-}
-
 // ───────────────────────── Model ─────────────────────────
 
-/// inbox 消息上限。
-pub const MESSAGES_CAP: usize = 5000;
 /// 活动日志事件上限(内存; DB 保留更多)。
 pub const EVENTS_CAP: usize = 2000;
 
@@ -351,8 +297,6 @@ pub struct Model {
     pub directory: HashMap<String, Agent>,
     /// group name → handle set (群组)
     pub groups: HashMap<String, HashSet<String>>,
-    /// inbox 消息队列(cap 5000)
-    pub messages: VecDeque<OrchMessage>,
     /// 活动日志事件队列(cap EVENTS_CAP, 最新在尾部)。
     pub events: VecDeque<Event>,
     /// 输入栏历史(cap HISTORY_CAP, 最新在尾部)。
@@ -362,7 +306,6 @@ pub struct Model {
     /// pending status 缓存: AgentsLoaded 和 StatusUpdated 是异步的,
     /// 可能 StatusUpdated 先到但 directory 为空。缓存到这,AgentsLoaded 时合并。
     pub pending_status: HashMap<String, StatusJoin>,
-    pub unread_counts: HashMap<String, usize>,
     pub worktree_ps: Vec<WorktreePsEntry>,
     /// 编排快照(按需刷新,t 键触发)。
     pub orch_snapshot: Option<OrchSnapshot>,
@@ -403,12 +346,10 @@ impl Model {
         Self {
             directory: HashMap::new(),
             groups: HashMap::new(),
-            messages: VecDeque::new(),
             history: VecDeque::new(),
             events: VecDeque::new(),
             generation: 0,
             pending_status: HashMap::new(),
-            unread_counts: HashMap::new(),
             worktree_ps: Vec::new(),
             tags: HashMap::new(),
             alert_rules: Vec::new(),
@@ -506,50 +447,6 @@ impl Model {
         self.generation += 1;
     }
 
-    /// 追加 inbox 消息, cap 5000, 溢出弹头。
-    pub fn push_message(&mut self, msg: OrchMessage) {
-        if self.messages.len() >= MESSAGES_CAP {
-            self.messages.pop_front();
-        }
-        self.messages.push_back(msg);
-    }
-
-    /// 全量替换消息队列(inbox 快照), 返回新增消息 ID。
-    /// 过滤: 只保留最近 24h + hub-tui 自己发出或收到的, cap 100。
-    pub fn apply_messages(&mut self, msgs: Vec<OrchMessage>) -> Vec<String> {
-        let self_h = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
-        let now_s = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let cutoff = now_s - 86400; // 24h
-        let mut filtered: Vec<OrchMessage> = msgs.into_iter()
-            .filter(|m| {
-                // 只保留 hub-tui 自己发出的消息
-                if !self_h.is_empty() && m.from_handle != self_h {
-                    return false;
-                }
-                // 只保留最近 24h
-                if let Some(ts) = parse_iso8601_to_epoch(&m.created_at) {
-                    ts >= cutoff
-                } else {
-                    true
-                }
-            })
-            .collect();
-        // cap 100 (inbox 返回最新在前)
-        if filtered.len() > 100 {
-            filtered.truncate(100);
-        }
-        let old_ids: std::collections::HashSet<&str> =
-            self.messages.iter().map(|m| m.id.as_str()).collect();
-        let new_ids: Vec<String> = filtered.iter()
-            .filter(|m| !old_ids.contains(m.id.as_str()))
-            .map(|m| m.id.clone())
-            .collect();
-        self.messages = filtered.into_iter().collect();
-        new_ids
-    }
 
     /// 追加活动日志事件, cap EVENTS_CAP, 溢出弹头。timestamp_ms=0 时自动填 now_ms。
     pub fn push_event(&mut self, mut event: Event) {
@@ -880,11 +777,6 @@ impl Model {
         self.history = q;
     }
 
-    /// 更新未读消息计数(来自 orchestration inbox)。
-    pub fn apply_unread(&mut self, counts: HashMap<String, usize>) {
-        self.unread_counts = counts;
-        self.generation += 1;
-    }
 
     /// 更新 worktree ps 编排摘要。
     pub fn apply_worktree_ps(&mut self, entries: Vec<WorktreePsEntry>) {
@@ -1174,55 +1066,12 @@ pub fn directory_filter_handles(
         .collect()
 }
 
-/// 从消息列表中过滤出匹配 query 的消息(按 id 列表返回,用于 cursor 导航)。
-/// 支持命名空间前缀: from:handle / subject:text / type:status
-/// 无前缀 = 跨维度模糊匹配(from/subject/body/type)。
-pub fn messages_filter_ids(
-    messages: &std::collections::VecDeque<OrchMessage>,
-    query: &str,
-) -> Vec<String> {
-    if query.is_empty() {
-        return messages.iter().map(|m| m.id.clone()).collect();
-    }
-    let query = query.trim();
-    let (field, value) = if let Some((f, v)) = query.split_once(':') {
-        (Some(f), v)
-    } else {
-        (None, query)
-    };
-    let value_lower = value.to_ascii_lowercase();
-
-    messages
-        .iter()
-        .filter(|m| {
-            let target = match field {
-                Some("from") => m.from_handle.as_str(),
-                Some("subject") => m.subject.as_str(),
-                Some("type") => m.msg_type.as_str(),
-                Some("body") => m.body.as_str(),
-                Some("thread") => m.thread_id.as_deref().unwrap_or(""),
-                _ => {
-                    // 无前缀: 跨维度模糊匹配
-                    let combined = format!(
-                        "{} {} {} {}",
-                        m.from_handle, m.subject, m.body, m.msg_type
-                    );
-                    return crate::command::fuzzy_match(value, &combined);
-                }
-            };
-            target.to_ascii_lowercase().contains(&value_lower)
-        })
-        .map(|m| m.id.clone())
-        .collect()
-}
-
 // ───────────────────────── 全局搜索 ─────────────────────────
 
 /// 搜索结果分类(决定分组顺序和跳转语义)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchCategory {
     Agent,
-    Message,
     Event,
     History,
     Command,
@@ -1232,19 +1081,15 @@ impl SearchCategory {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Agent => "Agents",
-            Self::Message => "Messages",
             Self::Event => "Events",
             Self::History => "History",
             Self::Command => "Commands",
         }
     }
 }
-
-/// 搜索结果的导航目标。
 #[derive(Debug, Clone)]
 pub enum JumpTarget {
     AgentHandle(String),
-    MessageId(String),
     EventIndex(usize),
     HistoryIndex(usize),
     CommandName(String),
@@ -1300,24 +1145,6 @@ pub fn global_search(model: &Model, query: &str) -> Vec<SearchResult> {
                 primary: agent.handle.clone(),
                 secondary: format!("{source} · {state} · {}", agent.cwd),
                 jump_target: JumpTarget::AgentHandle(agent.handle.clone()),
-            });
-            count += 1;
-        }
-    }
-
-    // Messages (cap 5, newest-first)
-    let mut count = 0;
-    for m in model.messages.iter().rev() {
-        if count >= 5 { break; }
-        if crate::command::fuzzy_match(&q, &m.from_handle)
-            || crate::command::fuzzy_match(&q, &m.subject)
-            || crate::command::fuzzy_match(&q, &m.body)
-        {
-            results.push(SearchResult {
-                category: SearchCategory::Message,
-                primary: if !m.subject.is_empty() { m.subject.clone() } else { m.from_handle.clone() },
-                secondary: format!("from {} · {}", m.from_handle, truncate_search(&m.body, 60)),
-                jump_target: JumpTarget::MessageId(m.id.clone()),
             });
             count += 1;
         }
@@ -1424,9 +1251,8 @@ pub fn compute_snapshot(model: &Model) -> ModelSnapshot {
             pinned_in_dir += 1;
         }
     }
-
-    let message_total = model.messages.len();
-    let message_unread = model.messages.iter().filter(|m| m.read == 0).count();
+    let message_total: usize = 0;
+    let message_unread: usize = 0;
 
     let mut sev_counts: [usize; 3] = [0, 0, 0];
     let mut event_by_category: HashMap<String, usize> = HashMap::new();

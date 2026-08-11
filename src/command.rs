@@ -71,11 +71,6 @@ pub fn builtin_commands() -> Vec<Command> {
             jump_tab_directory,
         ),
         Command::new(
-            "jump messages",
-            "Go to Messages tab",
-            jump_tab_messages,
-        ),
-        Command::new(
             "refresh agents",
             "Force refresh terminal list + status + inbox",
             refresh_all,
@@ -159,11 +154,6 @@ pub fn builtin_commands() -> Vec<Command> {
             "set config",
             "Set a configuration value (enters input mode: config:key=value)",
             set_config,
-        ),
-        Command::new(
-            "reply to message",
-            "Reply to the selected message in Messages tab (enter reply mode)",
-            reply_message,
         ),
         Command::new(
             "show tasks",
@@ -372,19 +362,10 @@ fn jump_tab_directory(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     vec![]
 }
 
-fn jump_tab_messages(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
-    shell.tab = crate::shell::Tab::Messages;
-    shell.cursor = 0;
-    shell.focus = crate::shell::FocusTarget::Messages;
-    vec![]
-}
-
 fn refresh_all(_model: &Model, _shell: &mut Shell) -> Vec<Cmd> {
     vec![
         Cmd::RefreshAgents,
         Cmd::RefreshStatus,
-        Cmd::DrainMessages,
-        Cmd::RefreshUnread,
     ]
 }
 
@@ -403,24 +384,6 @@ fn quit(_model: &Model, _shell: &mut Shell) -> Vec<Cmd> {
 fn yank_handle(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     if let Some(handle) = crate::update::selected_agent_handle_public(model, shell) {
         shell.push_toast(format!("Yanked: {handle}"));
-        // 实际 yank 在 update.rs handle_normal_key 的 'y' 键里做,这里只 toast。
-        // 命令面板执行 yank 需要调用 clipboard — 但 command handler 不能直接 IO。
-        // 所以这里返回 handle 作为 toast,实际 clipboard 操作用户按 y 键。
-    }
-    vec![]
-}
-
-fn reply_message(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
-    shell.tab = crate::shell::Tab::Messages;
-    shell.focus = crate::shell::FocusTarget::Messages;
-    let msgs: Vec<_> = model.messages.iter().rev().collect();
-    if let Some(msg) = msgs.get(shell.cursor) {
-        let id = &msg.id;
-        shell.insert_mode = true;
-        shell.focus = crate::shell::FocusTarget::Input;
-        shell.input_buf = format!("reply:{id} ");
-    } else {
-        shell.push_toast("No message selected".into());
     }
     vec![]
 }

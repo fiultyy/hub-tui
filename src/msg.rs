@@ -44,8 +44,6 @@ pub enum AppMsg {
     Key(KeyEvent),
     /// 鼠标左键点击(终端坐标)。
     MouseLeftClick { x: u16, y: u16 },
-    /// 鼠标点击卡片✉按钮(终端坐标)。
-    MouseMsgClick { x: u16, y: u16 },
     /// 鼠标滚轮上滚。
     MouseScrollUp,
     /// 鼠标滚轮下滚。
@@ -60,18 +58,6 @@ pub enum AppMsg {
     AgentsLoaded(Vec<Agent>),
     /// last-status.json 刷新结果。
     StatusUpdated(Vec<AgentStatus>),
-    /// orchestration send 成功(msg_id)。
-    SendOk(String),
-    /// orchestration send 失败(error)。
-    SendFailed(String),
-    /// orchestration inbox drain 完成(ADR-4)。
-    MessagesDrained(Vec<crate::model::OrchMessage>),
-    /// orchestration inbox 全量未读数刷新(handle → count)。
-    /// mark-read 成功(delivery_id)。
-    AckOk(String),
-    /// mark-read 失败(error)。
-    AckFailed(String),
-    UnreadUpdated(std::collections::HashMap<String, usize>),
     /// socket 查询请求(来自 agent 连接)。
     SocketQuery(SocketReq),
     /// 信息 toast(非错误)。
@@ -81,8 +67,6 @@ pub enum AppMsg {
     InjectFailed(String),
     /// terminal read 结果回灌。
     TerminalOutput(String),
-    /// 群组操作成功反馈(joined/left/broadcast)。
-    GroupActionOk(String),
     /// worktree ps 结果回灌。
     WorktreePsLoaded(Vec<crate::model::WorktreePsEntry>),
     /// terminal create 成功: 返回新终端 handle + title(用于 toast + RefreshAgents)。

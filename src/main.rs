@@ -62,9 +62,6 @@ fn main() -> io::Result<()> {
             mdl.directory.insert(agent.handle.clone(), agent);
         }
         mdl.groups = bootstrap.groups;
-        for msg in bootstrap.messages {
-            mdl.push_message(msg);
-        }
         mdl.apply_config(bootstrap.config);
         let events = bootstrap_events(&svc);
         mdl.apply_events(events);
@@ -113,8 +110,6 @@ fn main() -> io::Result<()> {
         },
         update::Cmd::RefreshAgents,
         update::Cmd::RefreshStatus,
-        update::Cmd::DrainMessages,
-        update::Cmd::RefreshUnread,
     ]);
 
     run_loop(&mut term, &rx, &model, &mut shell, &mut svc, &tx)

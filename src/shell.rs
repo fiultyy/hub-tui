@@ -8,27 +8,22 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Directory,
-    Messages,
 }
 
 impl Tab {
     /// 所有 tab 变体(按显示顺序)。
-    pub const ALL: [Tab; 2] = [Tab::Directory, Tab::Messages];
+    pub const ALL: [Tab; 1] = [Tab::Directory];
 
     /// 显示标签。
     pub fn label(self) -> &'static str {
         match self {
             Tab::Directory => "Directory",
-            Tab::Messages => "Messages",
         }
     }
 
     /// 下一 tab(循环)。
     pub fn next(self) -> Self {
-        match self {
-            Tab::Directory => Tab::Messages,
-            Tab::Messages => Tab::Directory,
-        }
+        Tab::Directory
     }
 }
 
@@ -36,9 +31,9 @@ impl Tab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
     Directory,
-    Messages,
     Input,
 }
+
 
 /// Socket 连接状态(ADR-3)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

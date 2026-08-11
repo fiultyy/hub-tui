@@ -319,92 +319,7 @@ impl Db {
 
     // ──── Messages ────
 
-    /// Insert message (INSERT OR IGNORE dedup by id). Caps at 5000 rows.
-    pub fn insert_message_raw(
-        &self,
-        id: &str,
-        from_handle: &str,
-        to_handle: &str,
-        subject: &str,
-        body: &str,
-        msg_type: &str,
-        priority: &str,
-        thread_id: Option<&str>,
-        payload: Option<&str>,
-        read: i64,
-        created_at: &str,
-        sequence: i64,
-    ) {
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO messages
-             (id, from_handle, to_handle, subject, body, msg_type, priority, thread_id, payload, read, created_at, sequence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                id,
-                from_handle,
-                to_handle,
-                subject,
-                body,
-                msg_type,
-                priority,
-                thread_id,
-                payload,
-                read as i32,
-                created_at,
-                sequence
-            ],
-        );
-        // Cap: delete oldest beyond 5000
-        let _ = conn.execute(
-            "DELETE FROM messages WHERE rowid IN (
-                SELECT rowid FROM messages ORDER BY sequence DESC LIMIT -1 OFFSET 5000
-            )",
-            [],
-        );
-    }
 
-    /// Load recent messages (oldest first, for display).
-    pub fn get_recent_messages(&self, limit: usize) -> Vec<crate::model::OrchMessage> {
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return vec![],
-        };
-        let mut stmt = match conn.prepare(
-            "SELECT id, from_handle, to_handle, subject, body, msg_type, priority,
-                    thread_id, payload, read, created_at, sequence
-             FROM messages ORDER BY sequence DESC LIMIT ?1",
-        ) {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
-        let rows = stmt
-            .query_map(params![limit as i64], |row| {
-                Ok(crate::model::OrchMessage {
-                    id: row.get(0)?,
-                    from_handle: row.get(1)?,
-                    to_handle: row.get(2)?,
-                    subject: row.get(3)?,
-                    body: row.get(4)?,
-                    msg_type: row.get(5)?,
-                    priority: row.get(6)?,
-                    thread_id: row.get(7)?,
-                    payload: row.get(8)?,
-                    read: row.get::<_, i64>(9)?,
-                    created_at: row.get(10)?,
-                    sequence: row.get(11)?,
-                })
-            })
-            .ok();
-        let mut result: Vec<_> = rows
-            .map(|r| r.filter_map(|x| x.ok()).collect())
-            .unwrap_or_default();
-        result.reverse(); // oldest first for display
-        result
-    }
 
     // ──── Groups ────
 
@@ -1151,23 +1066,6 @@ impl Db {
         self.upsert_agent(handle, cwd, title, connected, state, source, None);
     }
 
-    /// Insert from OrchMessage ref (service.rs calls insert_message(msg, bool)).
-    pub fn insert_message(&self, msg: &crate::model::OrchMessage, _mark_read: bool) {
-        self.insert_message_raw(
-            &msg.id,
-            &msg.from_handle,
-            &msg.to_handle,
-            &msg.subject,
-            &msg.body,
-            &msg.msg_type,
-            &msg.priority,
-            msg.thread_id.as_deref(),
-            msg.payload.as_deref(),
-            msg.read,
-            &msg.created_at,
-            msg.sequence,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1202,44 +1100,6 @@ mod tests {
         assert_eq!(groups2["team-a"], vec!["term_002".to_string()]);
     }
 
-    #[test]
-    fn messages_dedup_and_cap() {
-        let db = test_db();
-        for i in 0..10 {
-            db.insert_message_raw(
-                &format!("msg_{i:04}"),
-                "term_a",
-                "term_b",
-                "test",
-                "body",
-                "status",
-                "normal",
-                None,
-                None,
-                0,
-                "2026-01-01T00:00:00Z",
-                i,
-            );
-        }
-        // Insert duplicate (should be ignored)
-        db.insert_message_raw(
-            "msg_0000",
-            "term_a",
-            "term_b",
-            "dup",
-            "",
-            "status",
-            "normal",
-            None,
-            None,
-                0,
-            "",
-            0,
-        );
-        let msgs = db.get_recent_messages(100);
-        assert_eq!(msgs.len(), 10); // no dup
-        assert_eq!(msgs[0].id, "msg_0000"); // oldest first
-    }
 
     #[test]
     fn agent_activity_upsert() {
