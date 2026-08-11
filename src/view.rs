@@ -552,10 +552,32 @@ fn preview_tail(preview: Option<&str>) -> String {
         .to_string()
 }
 
-/// Extract real cwd from agent data. Tries title (shell prompt pattern),
-/// falls back to worktreePath (agent.cwd).
+/// Extract real cwd from agent data. Sources tried in order:
+/// 1. PTY preview: scan for "cwd=" or "cwd:" pattern (from shell echoes)
+/// 2. Title: shell prompt pattern "yy@host: ~/path"
+/// 3. worktreePath (agent.cwd) — Orca's aggregated field, always present
 fn extract_real_cwd(agent: &crate::model::Agent) -> String {
-    // Shell terminals have title like "yy@host: ~/path" — extract the path
+    // 1. Parse preview for cwd= or cwd: patterns
+    if let Some(preview) = agent.preview.as_deref() {
+        for line in preview.lines().rev().take(10) {
+            // Match patterns: cwd=/path/to, cwd:/path/to, cwd=/home/...
+            if let Some(idx) = line.find("cwd=") {
+                let rest = &line[idx + 4..];
+                let path = rest.split_whitespace().next().unwrap_or("").trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '~' && c != '.' && c != '-');
+                if path.starts_with('/') || path.starts_with('~') {
+                    return expand_tilde(path);
+                }
+            }
+            if let Some(idx) = line.find("cwd:") {
+                let rest = line[idx + 4..].trim_start();
+                let path = rest.split_whitespace().next().unwrap_or("");
+                if path.starts_with('/') || path.starts_with('~') {
+                    return expand_tilde(path);
+                }
+            }
+        }
+    }
+    // 2. Shell terminals have title like "yy@host: ~/path"
     if let Some(title) = agent.title.as_deref() {
         if let Some(idx) = title.rfind(": ") {
             let path_part = &title[idx + 2..].trim();
@@ -564,6 +586,7 @@ fn extract_real_cwd(agent: &crate::model::Agent) -> String {
             }
         }
     }
+    // 3. Fall back to worktreePath
     agent.cwd.clone()
 }
 
@@ -680,7 +703,10 @@ fn draw_agent_card(
 
     f.render_widget(ratatui::widgets::Clear, area);
 
-    // ── row 0: source图标 + title + badges (no right-side status) ──
+    // ── row 0: tag + source图标 + title + badges ──
+    let id_tag = handle_tag(&agent.handle);
+    let id_tag_str = format!(" {} ", id_tag);
+    let id_tag_w = UnicodeWidthStr::width(id_tag_str.as_str());
     let icon = if pinned { "\u{1f4cc}" } else if shell_selected { "\u{2713}" } else { source_icon(agent.source.as_deref()) };
     let title_text = agent.title.as_deref().unwrap_or("").trim();
     let badge_str = if unread > 0 { format!(" ({unread})") } else { String::new() };
@@ -696,7 +722,7 @@ fn draw_agent_card(
     let tag_badge_w = UnicodeWidthStr::width(tag_badge.as_str());
     let badge_w = UnicodeWidthStr::width(badge_str.as_str());
     let icon_w = UnicodeWidthStr::width(icon) + 1;
-    let title_max = avail.saturating_sub(icon_w + badge_w + tag_badge_w + note_badge_w + watch_badge_w);
+    let title_max = avail.saturating_sub(id_tag_w + icon_w + badge_w + tag_badge_w + note_badge_w + watch_badge_w);
     let title_trunc = if !title_text.is_empty() && title_max > 2 {
         crate::render::truncate_width(title_text, title_max)
     } else {
@@ -705,6 +731,7 @@ fn draw_agent_card(
     let title_display_w = UnicodeWidthStr::width(title_trunc.as_str());
     let title_pad = title_max.saturating_sub(title_display_w);
     let mut row0_spans = vec![
+        Span::styled(id_tag_str, Style::default().bg(cs.tag_bg).fg(theme.bg).add_modifier(Modifier::BOLD)),
         Span::styled(icon, Style::default().fg(cs.bar_fg).add_modifier(Modifier::BOLD)),
         Span::styled(" ", Style::default()),
         Span::styled(title_trunc, Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
@@ -722,7 +749,7 @@ fn draw_agent_card(
     if !watch_badge.is_empty() {
         row0_spans.push(Span::styled(watch_badge, Style::default().fg(theme.muted)));
     }
-    row0_spans.push(Span::styled(" ".repeat(avail.saturating_sub(icon_w + title_display_w + badge_w + tag_badge_w + note_badge_w + watch_badge_w)), bg_style));
+    row0_spans.push(Span::styled(" ".repeat(avail.saturating_sub(id_tag_w + icon_w + title_display_w + badge_w + tag_badge_w + note_badge_w + watch_badge_w)), bg_style));
     let row0 = Line::from(row0_spans);
 
     // ── rows 1-3: recap body (last_assistant_msg > prompt > preview_tail) ──
