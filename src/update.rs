@@ -176,24 +176,22 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
 
         // ──── 鼠标左键点击(选中 card) ────
         AppMsg::MouseLeftClick { x, y } => {
+            shell.manual_scroll = 0;
             if let Some(idx) = hit_test_card(model, shell, x, y) {
                 shell.cursor = idx;
             }
             vec![]
         }
 
-        // ──── 鼠标滚轮(移动 cursor) ────
+        // ──── 鼠标滚轮(滚动视口, 不改变 cursor) ────
         AppMsg::MouseScrollUp => {
-            if shell.cursor > 0 {
-                shell.cursor -= 1;
-            }
+            shell.manual_scroll = shell.manual_scroll.saturating_sub(1);
+            shell.last_scroll_at = Some(std::time::Instant::now());
             vec![]
         }
         AppMsg::MouseScrollDown => {
-            let len = list_len(model, shell);
-            if !len.is_empty() && shell.cursor + 1 < len.len() {
-                shell.cursor += 1;
-            }
+            shell.manual_scroll = shell.manual_scroll.saturating_add(1);
+            shell.last_scroll_at = Some(std::time::Instant::now());
             vec![]
         }
 
@@ -880,6 +878,7 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
         // j/下: cursor 下移
         (KeyCode::Char('j'), KeyModifiers::NONE)
         | (KeyCode::Down, KeyModifiers::NONE) => {
+            shell.manual_scroll = 0;
             let len = list_len(model, shell);
             if !len.is_empty() && shell.cursor < len.len() - 1 {
                 shell.cursor += 1;
@@ -890,6 +889,7 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
         // k/上: cursor 上移
         (KeyCode::Char('k'), KeyModifiers::NONE)
         | (KeyCode::Up, KeyModifiers::NONE) => {
+            shell.manual_scroll = 0;
             if shell.cursor > 0 {
                 shell.cursor -= 1;
             }

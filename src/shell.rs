@@ -61,6 +61,10 @@ pub struct Shell {
     pub focus: FocusTarget,
     /// 列表选中索引。
     pub cursor: usize,
+    /// 鼠标滚轮手动滚动偏移(None 时由 cursor 自动计算)。
+    pub manual_scroll: u16,
+    /// 上次鼠标滚动时间(用于自动恢复 cursor 跟踪)。
+    pub last_scroll_at: Option<std::time::Instant>,
     /// spinner 动画帧索引。
     pub spinner_frame: usize,
     /// socket 连接状态(ADR-3)。
@@ -181,6 +185,8 @@ impl Shell {
             tab: Tab::Directory,
             focus: FocusTarget::Directory,
             cursor: 0,
+            manual_scroll: 0,
+            last_scroll_at: None,
             spinner_frame: 0,
             conn_state: ConnState::Connected,
             insert_mode: false,

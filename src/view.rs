@@ -396,7 +396,11 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     };
     let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
     let layout = directory_layout(&sorted, model, inner.x, inner.width);
-    let scroll_y = directory_scroll(shell.cursor, &layout, inner.height);
+    let scroll_y = if shell.manual_scroll > 0 {
+        shell.manual_scroll.min(layout.last().map(|e| e.y + e.h).unwrap_or(0))
+    } else {
+        directory_scroll(shell.cursor, &layout, inner.height)
+    };
 
     for entry in &layout {
         // 内容空间剔除: 完全在视口上方/下方的项跳过
