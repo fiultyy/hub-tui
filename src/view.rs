@@ -240,7 +240,7 @@ fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
 /// 卡片宽度(字符)。
 pub const CARD_W: u16 = 36;
 /// 卡片内容高度(行)。
-pub const CARD_H: u16 = 6; // identity(1) + recap(3) + tool(1) + status(1)
+pub const CARD_H: u16 = 8; // identity(1) + recap(5) + tool(1) + status(1)
 /// 卡片间距(行/列)。
 pub const CARD_GAP: u16 = 1;
 /// 分区标题高度。
@@ -616,17 +616,18 @@ fn word_wrap(text: &str, max_w: usize) -> Vec<String> {
     if lines.is_empty() { lines.push(String::new()); }
     lines
 }
-
-/// 渲染单个 agent card(6 行布局)。
+/// 渲染单个 agent card(8 行布局)。
 ///
 /// 布局:
 /// ```text
 /// π title (N) [tag] 📝 👁              ← row 0: source图标+title+badges
 /// ▌ recap line 1 (last_assistant_msg)  ← row 1: recap body (wrapped)
-/// ▌ recap line 2                       ← row 2: recap body
-/// ▌ recap line 3                       ← row 3: recap body
-/// ▌ 🔧tool  toolInput截断              ← row 4: 工具+动作
-/// ▌ ⠋ Working 2s · …/projects/hub-tui  ← row 5: status line
+/// ▌ recap line 2                       ← row 2
+/// ▌ recap line 3                       ← row 3
+/// ▌ recap line 4                       ← row 4
+/// ▌ recap line 5                       ← row 5
+/// ▌ 🔧tool  toolInput截断              ← row 6: 工具+动作
+/// ▌ ⠋ Working 2s · …/projects/hub-tui  ← row 7: status line
 /// ```
 fn draw_agent_card(
     f: &mut Frame,
@@ -708,7 +709,7 @@ fn draw_agent_card(
     } else {
         String::new()
     };
-    let body_h = 3usize;
+    let body_h = 5usize;
     let chars_per_line = avail.saturating_sub(indent);
     let wrapped = if recap_text.is_empty() {
         Vec::new()
