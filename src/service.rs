@@ -216,9 +216,7 @@ impl Service {
                     let lock = Arc::clone(&self.cli_lock);
                     thread::spawn(move || {
                         let _guard = lock.lock();
-                        // 1. 先消费(check --all)发给本 terminal 的消息, 清除 Orca 未读提示
-                        let _ = transport::orchestration_drain_all();
-                        // 2. 再拉 inbox 全量(hub-tui 发出的历史)
+                        // 拉 inbox 全量(hub-tui 发出的消息历史)
                         match transport::orchestration_check() {
                             Ok(msgs) => {
                                 let _ = tx.send(AppMsg::MessagesDrained(msgs));
