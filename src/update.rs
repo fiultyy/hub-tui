@@ -1061,6 +1061,22 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![Cmd::TerminalSend { handle: handle.to_string(), text: text.to_string() }];
     }
 
+    // inject:<text> — PTY inject text to ALL selected agents (selected_set)
+    if let Some(text) = buf.strip_prefix("inject:") {
+        let text = text.trim();
+        if text.is_empty() { return vec![]; }
+        if shell.selected_set.is_empty() {
+            shell.push_toast("No agents selected (Space to select)".into());
+            return vec![];
+        }
+        let count = shell.selected_set.len();
+        shell.push_toast(format!("⚡ injected into {count} agents"));
+        return shell.selected_set.iter().map(|h| Cmd::TerminalSend {
+            handle: h.clone(),
+            text: text.to_string(),
+        }).collect();
+    }
+
     // 解析 "rename:handle new_title" 格式
     if let Some((handle, title)) = buf.strip_prefix("rename:").and_then(|s| s.split_once(' ')) {
         if title.is_empty() {
