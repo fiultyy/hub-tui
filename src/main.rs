@@ -161,6 +161,14 @@ fn run_loop(
         let cmds = update::update(&mut model.write(), shell, AppMsg::Tick);
         svc.execute(cmds);
 
+
+        // ──── Sync terminal size for hit_test_card accuracy ────
+        // shell.size defaults to (80,24) and only updates on Event::Resize.
+        // hit_test_card/hit_test_msg_btn use it to compute card geometry.
+        // Without this, mouse clicks drift when terminal != 80×24.
+        if let Ok((w, h)) = crossterm::terminal::size() {
+            shell.size = (w, h);
+        }
         // ──── 画帧(Node D: view::draw) ────
         {
             let mdl = model.read();
