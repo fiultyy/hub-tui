@@ -195,12 +195,12 @@ pub fn orchestration_send(to: &str, subject: &str, body: &str) -> Result<String,
     Err(format!("unexpected send output: {stdout}"))
 }
 
-/// ADR-4: drain inbox(orchestration check)。
-///
-/// 跑 `orca orchestration check --json`, 解析 messages 数组。
+/// 拉 `orca orchestration inbox --json` 全量 inter-agent 消息。
+/// hub-tui 是监控面板(非工作 agent), 用 inbox 而非 check —
+/// check 只取发给本 terminal 的消息(始终为 0), inbox 取全部。
 pub fn orchestration_check() -> Result<Vec<crate::model::OrchMessage>, String> {
     let out = std::process::Command::new("orca-ide")
-        .args(["orchestration", "check", "--json"])
+        .args(["orchestration", "inbox", "--json"])
         .output()
         .map_err(|e| format!("failed to spawn orca: {e}"))?;
 
@@ -211,7 +211,7 @@ pub fn orchestration_check() -> Result<Vec<crate::model::OrchMessage>, String> {
 
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let parsed: CheckOutput = serde_json::from_str(&stdout)
-        .map_err(|e| format!("failed to parse check output: {e}"))?;
+        .map_err(|e| format!("failed to parse inbox output: {e}"))?;
 
     Ok(parsed.result.messages)
 }

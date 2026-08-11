@@ -363,11 +363,9 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
         }
 
         AppMsg::MessagesDrained(msgs) => {
-            let n = msgs.len();
             let persist = msgs.clone();
-            for msg in msgs {
-                model.push_message(msg);
-            }
+            let new_ids = model.apply_messages(msgs);
+            let n = new_ids.len();
             let mut cmds = vec![Cmd::PersistMessages(persist)];
             if n > 0 {
                 cmds.push(note_event(model, EventSeverity::Info, EventCategory::Message, "system", format!("Received {n} messages")));

@@ -492,6 +492,24 @@ impl Model {
         self.messages.push_back(msg);
     }
 
+    /// 全量替换消息队列(inbox 快照), 返回新增消息 ID(之前不存在)。
+    pub fn apply_messages(&mut self, msgs: Vec<OrchMessage>) -> Vec<String> {
+        let old_ids: std::collections::HashSet<&str> =
+            self.messages.iter().map(|m| m.id.as_str()).collect();
+        let new_ids: Vec<String> = msgs
+            .iter()
+            .filter(|m| !old_ids.contains(m.id.as_str()))
+            .map(|m| m.id.clone())
+            .collect();
+        let mut q: VecDeque<OrchMessage> = msgs.into_iter().collect();
+        if q.len() > MESSAGES_CAP {
+            let drop_n = q.len() - MESSAGES_CAP;
+            q.drain(..drop_n);
+        }
+        self.messages = q;
+        new_ids
+    }
+
     /// 追加活动日志事件, cap EVENTS_CAP, 溢出弹头。timestamp_ms=0 时自动填 now_ms。
     pub fn push_event(&mut self, mut event: Event) {
         if self.events.len() >= EVENTS_CAP {
