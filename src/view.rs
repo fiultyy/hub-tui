@@ -1660,7 +1660,7 @@ fn draw_config_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, 
 
     // 已知配置项(带描述和默认值)
     let known: &[(&str, &str, &str)] = &[
-        ("refresh_interval_ms", "Agent refresh interval (ms)", "5000"),
+        ("refresh_interval_ms", "Agent refresh interval (ms)", "1500"),
         ("theme", "UI color theme (dark/default)", "default"),
         ("default_filter", "Default directory filter query", ""),
     ];

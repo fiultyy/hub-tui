@@ -847,11 +847,11 @@ impl Model {
         self.config.get(key).cloned().unwrap_or_else(|| default.to_string())
     }
 
-    /// 获取 refresh_interval_ms(默认 5000)。
+    /// 获取 refresh_interval_ms(默认 1500)。
     pub fn refresh_interval_ms(&self) -> u64 {
-        self.get_config("refresh_interval_ms", "5000")
+        self.get_config("refresh_interval_ms", "1500")
             .parse()
-            .unwrap_or(5000)
+            .unwrap_or(1500)
     }
 
     /// 获取 theme(默认 "default")。
