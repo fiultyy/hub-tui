@@ -495,15 +495,14 @@ impl Model {
         // 立即尝试 join 到现有 directory(paneKey join)
         for agent in self.directory.values_mut() {
             if let Some(sj) = status_map.get(&agent.pane_key) {
-                agent.source = Some(sj.source.clone());
                 agent.state = Some(sj.state.clone());
                 agent.prompt = sj.prompt.clone();
                 agent.tool_name = sj.tool_name.clone();
                 agent.tool_input = sj.tool_input.clone();
                 agent.last_assistant_msg = sj.last_assistant_msg.clone().or(agent.last_assistant_msg.take());
             }
-        }
 
+        }
         self.generation += 1;
     }
 
@@ -526,15 +525,15 @@ impl Model {
         let cutoff = now_s - 86400; // 24h
         let mut filtered: Vec<OrchMessage> = msgs.into_iter()
             .filter(|m| {
-                // 只保留 hub-tui 发出或收到的
-                if !self_h.is_empty() && m.from_handle != self_h && m.to_handle != self_h {
+                // 只保留 hub-tui 自己发出的消息
+                if !self_h.is_empty() && m.from_handle != self_h {
                     return false;
                 }
-                // 只保留最近 24h (parse created_at ISO8601 → epoch)
+                // 只保留最近 24h
                 if let Some(ts) = parse_iso8601_to_epoch(&m.created_at) {
                     ts >= cutoff
                 } else {
-                    true // 解析失败则保留
+                    true
                 }
             })
             .collect();
