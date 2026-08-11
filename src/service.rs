@@ -367,6 +367,7 @@ impl Service {
                             for (n, e) in &bundle.aliases { db.upsert_alias(n, e); }
                             for (k, c) in &bundle.hotkeys { db.upsert_hotkey(k, c); }
                             for h in &bundle.watched { db.upsert_watched(h); }
+                            for (n, b) in &bundle.templates { db.upsert_template(n, b); }
                         }
                         let _ = tx.send(AppMsg::ImportOk { path, bundle });
                     });
@@ -396,6 +397,12 @@ impl Service {
                 }
                 crate::update::Cmd::PersistWatchRemove { handle } => {
                     if let Some(db) = &self.db { db.remove_watched(&handle); }
+                }
+                crate::update::Cmd::PersistTemplate { name, body } => {
+                    if let Some(db) = &self.db { db.upsert_template(&name, &body); }
+                }
+                crate::update::Cmd::RemoveTemplate { name } => {
+                    if let Some(db) = &self.db { db.remove_template(&name); }
                 }
                 crate::update::Cmd::PersistGroupJoin { name, handle } => {
                     self.persist_group_join(&name, &handle);

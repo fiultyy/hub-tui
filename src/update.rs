@@ -116,6 +116,10 @@ pub enum Cmd {
     PersistWatchAdd { handle: String },
     /// 移除监控 agent。
     PersistWatchRemove { handle: String },
+    /// 持久化命令模板到 DB。
+    PersistTemplate { name: String, body: String },
+    /// 移除命令模板。
+    RemoveTemplate { name: String },
     /// 无操作。
     Noop,
     /// 退出。
@@ -421,11 +425,12 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             model.apply_notes(bundle.notes.clone());
             model.apply_aliases(bundle.aliases.clone());
             model.apply_hotkeys(bundle.hotkeys.clone());
+            model.apply_templates(bundle.templates.clone());
             model.apply_watched(bundle.watched.clone());
             model.generation += 1;
             let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
                 + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
-                + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len() + bundle.watched.len();
+                + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len() + bundle.watched.len() + bundle.templates.len();
             shell.push_toast(format!("✓ imported {count} items from {path}"));
             vec![]
         }
@@ -468,7 +473,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.quickswitch_active {
         return handle_quickswitch_key(model, shell, k);
     }
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active || shell.template_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
     // Ctrl-W: toggle watch on current agent (non-insert mode)
@@ -1079,6 +1084,17 @@ fn expand_alias(model: &Model, buf: String) -> String {
     buf
 }
 
+/// Replace $1, $2, ... $N with positional args (1-indexed).
+/// Unmatched $N are left as-is (allow partial application).
+fn substitute_vars(template: &str, args: &[&str]) -> String {
+    let mut result = template.to_string();
+    for (i, arg) in args.iter().enumerate() {
+        let placeholder = format!("${}", i + 1);
+        result = result.replace(&placeholder, arg);
+    }
+    result
+}
+
 fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd> {
     // Alias expansion: if the first word matches an alias, expand it before prefix matching
     let buf = expand_alias(model, buf);
@@ -1562,10 +1578,11 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             aliases: model.aliases.clone(),
             hotkeys: model.hotkeys.clone(),
             watched: model.watched.iter().cloned().collect(),
+            templates: model.templates.clone(),
         };
         let count = bundle.config.len() + bundle.tags.len() + bundle.snippets.len()
             + bundle.macros.len() + bundle.saved_views.len() + bundle.pinned.len()
-            + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len() + bundle.watched.len();
+            + bundle.alert_rules.len() + bundle.notes.len() + bundle.aliases.len() + bundle.hotkeys.len() + bundle.watched.len() + bundle.templates.len();
         shell.push_toast(format!("exporting {count} items to {path}…"));
         return vec![Cmd::ExportSettings { path, bundle }];
     }
@@ -1663,6 +1680,51 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             return if watching { vec![Cmd::PersistWatchAdd { handle }] } else { vec![Cmd::PersistWatchRemove { handle }] };
         }
         shell.push_toast("watch: usage: watch:<handle>".into());
+        return vec![];
+    }
+
+    // tpl:name body with $1 $2 / tpl:run:name args / tpl:rm:name / tpl:list
+    if let Some(rest) = buf.strip_prefix("tpl:") {
+        if rest.trim() == "list" {
+            shell.template_overlay_active = !shell.template_overlay_active;
+            if shell.template_overlay_active { shell.overlay_scroll = 0; }
+            return vec![];
+        }
+        if let Some(name) = rest.strip_prefix("rm:") {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                model.remove_template(&name);
+                shell.push_toast(format!("template removed: {name}"));
+                return vec![Cmd::RemoveTemplate { name }];
+            }
+            return vec![];
+        }
+        if let Some(r) = rest.strip_prefix("run:") {
+            let parts: Vec<&str> = r.trim_start().splitn(2, ' ').collect();
+            let name = parts[0];
+            if let Some(body) = model.get_template(name).cloned() {
+                let args: Vec<&str> = parts.get(1)
+                    .map(|s| s.split_whitespace().collect())
+                    .unwrap_or_default();
+                let expanded = substitute_vars(&body, &args);
+                shell.push_toast(format!("tpl: {name} → {expanded}"));
+                return dispatch_input(model, shell, expanded);
+            } else {
+                shell.push_toast(format!("template not found: {name}"));
+                return vec![];
+            }
+        }
+        // tpl:name body with $1 and $2 — save template
+        if let Some((name, body)) = rest.split_once(' ') {
+            let name = name.trim().to_string();
+            let body = body.trim().to_string();
+            if !name.is_empty() && !body.is_empty() {
+                model.add_template(&name, &body);
+                shell.push_toast(format!("template saved: {name}"));
+                return vec![Cmd::PersistTemplate { name, body }];
+            }
+        }
+        shell.push_toast("tpl: usage: tpl:<name> <body> | tpl:run:<name> <args> | tpl:rm:<name> | tpl:list".into());
         return vec![];
     }
 
@@ -2147,6 +2209,7 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
             shell.alias_overlay_active = false;
             shell.hotkeys_overlay_active = false;
             shell.theme_overlay_active = false;
+            shell.template_overlay_active = false;
             vec![]
         }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {

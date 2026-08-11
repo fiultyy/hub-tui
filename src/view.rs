@@ -162,6 +162,11 @@ pub fn draw(f: &mut Frame, model: &Model, shell: &Shell) {
         draw_theme_overlay(f, model, shell, area, &theme);
     }
 
+    // Templates 浮层
+    if shell.template_overlay_active {
+        draw_template_overlay(f, model, shell, area, &theme);
+    }
+
     if shell.quickswitch_active {
         draw_quickswitch_overlay(f, model, shell, area, &theme);
     }
@@ -2590,6 +2595,68 @@ fn draw_hotkeys_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect,
     f.render_widget(Clear, overlay_area);
 
     let title = " Hotkeys (Esc:close) ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .title(
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+    let inner = block.inner(overlay_area);
+    f.render_widget(block, overlay_area);
+
+    let visible_h = inner.height as usize;
+    let total = lines.len();
+    let start = shell.overlay_scroll.min(total.saturating_sub(visible_h));
+    let end = (start + visible_h).min(total);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+}
+
+// ───────────────────────── Templates 浮层 ─────────────────────────
+
+/// Templates overlay: sorted alphabetically, shows name → body (with $N placeholders), scrollable.
+fn draw_template_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    let mut names: Vec<&String> = model.templates.keys().collect();
+    names.sort();
+
+    let lines: Vec<Line> = if names.is_empty() {
+        vec![Line::from(Span::styled(
+            " No templates yet. Use 'tpl:name body with $1 $2' to create one.",
+            Style::default().fg(theme.muted),
+        ))]
+    } else {
+        names
+            .iter()
+            .map(|name| {
+                let body = &model.templates[*name];
+                Line::from(vec![
+                    Span::styled(format!(" {name}"), Style::default().fg(theme.accent)),
+                    Span::styled(format!(" → {body}"), Style::default().fg(theme.fg)),
+                ])
+            })
+            .collect()
+    };
+
+    let overlay_h = area.height.saturating_sub(4).max(8);
+    let overlay_w = area.width.saturating_sub(4).max(50);
+    let overlay_x = area.x + (area.width - overlay_w) / 2;
+    let overlay_y = area.y + 2;
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_w,
+        height: overlay_h,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    let title = " Templates (Esc:close) ";
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))

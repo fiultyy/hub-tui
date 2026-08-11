@@ -356,6 +356,8 @@ pub struct Model {
     pub hotkeys: HashMap<String, String>,
     /// Watch(监控) agent handle 集合(持久化到 DB)。
     pub watched: HashSet<String>,
+    /// 命令模板: name → body with $N variables(持久化到 DB)。
+    pub templates: HashMap<String, String>,
 }
 
 
@@ -383,6 +385,7 @@ impl Model {
             pinned: HashSet::new(),
             aliases: HashMap::new(),
             hotkeys: HashMap::new(),
+            templates: HashMap::new(),
             watched: HashSet::new(),
         }
     }
@@ -538,6 +541,28 @@ impl Model {
     /// 启动时从 DB 加载监控集合(替换)。
     pub fn apply_watched(&mut self, handles: Vec<String>) {
         self.watched = handles.into_iter().collect();
+    }
+
+    // ──── Templates(命令模板)────
+
+    /// 保存/覆盖模板。
+    pub fn add_template(&mut self, name: &str, body: &str) {
+        self.templates.insert(name.to_string(), body.to_string());
+    }
+
+    /// 移除模板。
+    pub fn remove_template(&mut self, name: &str) {
+        self.templates.remove(name);
+    }
+
+    /// 获取模板 body。
+    pub fn get_template(&self, name: &str) -> Option<&String> {
+        self.templates.get(name)
+    }
+
+    /// 启动时从 DB 加载模板(替换)。
+    pub fn apply_templates(&mut self, templates: HashMap<String, String>) {
+        self.templates = templates;
     }
 
 
@@ -1786,4 +1811,5 @@ pub struct ExportBundle {
     pub aliases: HashMap<String, String>,
     pub hotkeys: HashMap<String, String>,
     pub watched: Vec<String>,
+    pub templates: HashMap<String, String>,
 }

@@ -765,7 +765,7 @@ pub const INPUT_PREFIXES: &[&str] = &[
     "broadcast:", "create:", "config:", "reply:", "batch:", "tag:",
     "tagged:", "snip:", "run:", "rule:", "macro:", "view:", "note:",
     "export:", "import:", "alias:", "hotkey:", "theme:", "watch:",
-    "chain:",
+    "chain:", "tpl:",
 ];
 
 /// Prefixes where the first argument is an agent handle.
@@ -887,6 +887,18 @@ fn suggest_after_prefix(pfx: &str, arg: &str, model: &crate::model::Model, out: 
                 return;
             };
             push_handles(tag_pfx, partial, model, out);
+        }
+        "tpl:" => {
+            if arg.is_empty() {
+                for sub in &["run:", "rm:", "list"] {
+                    out.push(sub_cmd(pfx, sub));
+                }
+            } else if let Some(sub) = arg.strip_prefix("run:").map(|_| "run:")
+                .or_else(|| arg.strip_prefix("rm:").map(|_| "rm:"))
+            {
+                let partial = &arg[sub.len()..];
+                push_names(&format!("tpl:{}", sub), partial, model.templates.keys(), "template", out);
+            }
         }
         _ => {}
     }

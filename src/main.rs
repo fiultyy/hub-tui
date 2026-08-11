@@ -86,6 +86,8 @@ fn main() -> io::Result<()> {
         mdl.apply_hotkeys(hotkeys);
         let watched = svc.db.as_ref().map(|db| db.load_watched()).unwrap_or_default();
         mdl.apply_watched(watched);
+        let templates = svc.db.as_ref().map(|db| db.load_templates()).unwrap_or_default();
+        mdl.apply_templates(templates);
         mdl.generation += 1; // 触发 hub-directory.json 写出
     }
 

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
-const DB_VERSION: i64 = 13;
+const DB_VERSION: i64 = 14;
 
 /// SQLite handle. Cloneable (Arc<Mutex>), thread-safe.
 #[derive(Clone)]
@@ -231,7 +231,13 @@ impl Db {
                 handle TEXT PRIMARY KEY
             );
 
-            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '13');
+            CREATE TABLE IF NOT EXISTS templates (
+                name       TEXT PRIMARY KEY,
+                body       TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            INSERT OR REPLACE INTO config (key, value) VALUES ('db_version', '14');
             ",
         )
         .ok()?;
@@ -1022,6 +1028,43 @@ impl Db {
             });
         map
     }
+
+    // ──── Templates ────
+
+    /// 保存/覆盖命令模板(幂等)。
+    pub fn upsert_template(&self, name: &str, body: &str) {
+        let conn = match self.conn.lock() { Ok(c) => c, Err(_) => return };
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO templates (name, body) VALUES (?1, ?2)",
+            params![name, body],
+        );
+    }
+
+    /// 移除命令模板。
+    pub fn remove_template(&self, name: &str) {
+        let conn = match self.conn.lock() { Ok(c) => c, Err(_) => return };
+        let _ = conn.execute("DELETE FROM templates WHERE name = ?1", params![name]);
+    }
+
+    /// 加载所有模板 → name → body。
+    pub fn load_templates(&self) -> std::collections::HashMap<String, String> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut stmt = match conn.prepare("SELECT name, body FROM templates") {
+            Ok(s) => s,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let _ = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| {
+                for row in rows.flatten() {
+                    map.insert(row.0, row.1);
+                }
+            });
+        map
+    }
     // ──── Hotkeys ────
 
     /// 保存/覆盖热键(幂等)。
@@ -1088,6 +1131,7 @@ impl Db {
             DELETE FROM aliases;
             DELETE FROM hotkeys;
             DELETE FROM watched_agents;
+            DELETE FROM templates;
             DELETE FROM config WHERE key != 'db_version';
         ");
     }
@@ -1137,7 +1181,7 @@ mod tests {
     #[test]
     fn db_open_and_migrate() {
         let db = test_db();
-        assert_eq!(db.get_config("db_version"), Some("13".to_string()));
+        assert_eq!(db.get_config("db_version"), Some("14".to_string()));
     }
 
     #[test]

@@ -165,6 +165,8 @@ pub struct Shell {
     pub autocomplete_active: bool,
     /// Autocomplete 选中索引。
     pub autocomplete_cursor: usize,
+    /// Template library 浮层激活(tpl:list 触发)。
+    pub template_overlay_active: bool,
     /// 当前主题名(从 config 加载,draw() 每帧读取)。
     pub theme_name: String,
     /// generation guard(范式 3: 防陈旧回调)。
@@ -225,6 +227,7 @@ impl Shell {
             theme_overlay_active: false,
             quickswitch_active: false,
             quickswitch_query: String::new(),
+            template_overlay_active: false,
             autocomplete_active: false,
             autocomplete_cursor: 0,
             quickswitch_cursor: 0,
