@@ -1042,7 +1042,7 @@ fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
     }
 
     let msg_card_h = 4u16;
-    let msg_gap = 0u16;
+    let msg_gap = 1u16;
     let avail = inner.width as usize;
     let indent = 2usize;
     let chars_per_line = avail.saturating_sub(indent);
