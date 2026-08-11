@@ -239,8 +239,8 @@ fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
 
 /// 卡片宽度(字符)。
 pub const CARD_W: u16 = 36;
-/// 卡片内容高度(行)。
-pub const CARD_H: u16 = 8; // identity(1) + recap(5) + tool(1) + status(1)
+/// 卡片高度(行): identity(1) + recap(5) + tool(1) + status(1) + bottom_pad(1)。
+pub const CARD_H: u16 = 9;
 /// 卡片间距(行/列)。
 pub const CARD_GAP: u16 = 1;
 /// 分区标题高度。
@@ -703,7 +703,7 @@ fn draw_agent_card(
     let id_tag = handle_tag(&agent.handle);
     let id_tag_str = format!(" {} ", id_tag);
     let id_tag_w = UnicodeWidthStr::width(id_tag_str.as_str());
-    let msg_btn = " \u{2709}"; // ✉ (2 cols: space + envelope)
+    let msg_btn = " \u{279c}"; // ➤ (2 cols)
     let msg_btn_w = unicode_width::UnicodeWidthStr::width(msg_btn);
     let mid_pad = avail.saturating_sub(id_tag_w).saturating_sub(msg_btn_w + 1);
     let row0 = Line::from(vec![
@@ -817,11 +817,16 @@ fn draw_agent_card(
         Span::styled(" ".repeat(avail.saturating_sub(fixed_w + cwd_w)), bg_style),
     ]);
 
+    let bottom_row = Line::from(vec![
+        Span::styled(" ".repeat(avail), bg_style),
+    ]);
+
     let content = ratatui::widgets::Paragraph::new(vec![row0]
         .into_iter()
         .chain(recap_lines)
         .chain(std::iter::once(tool_row))
         .chain(std::iter::once(status_row))
+        .chain(std::iter::once(bottom_row))
         .collect::<Vec<_>>());
     f.render_widget(content, area);
 }
