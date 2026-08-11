@@ -430,7 +430,7 @@ impl Model {
                 incoming_agent.prompt = sj.prompt.clone();
                 incoming_agent.tool_name = sj.tool_name.clone();
                 incoming_agent.tool_input = sj.tool_input.clone();
-                incoming_agent.last_assistant_msg = sj.last_assistant_msg.clone();
+                incoming_agent.last_assistant_msg = sj.last_assistant_msg.clone().or(incoming_agent.last_assistant_msg.take());
             }
         }
 
@@ -477,7 +477,7 @@ impl Model {
                 agent.prompt = sj.prompt.clone();
                 agent.tool_name = sj.tool_name.clone();
                 agent.tool_input = sj.tool_input.clone();
-                agent.last_assistant_msg = sj.last_assistant_msg.clone();
+                agent.last_assistant_msg = sj.last_assistant_msg.clone().or(agent.last_assistant_msg.take());
             }
         }
 
