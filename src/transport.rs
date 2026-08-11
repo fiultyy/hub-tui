@@ -216,6 +216,14 @@ pub fn orchestration_check() -> Result<Vec<crate::model::OrchMessage>, String> {
     Ok(parsed.result.messages)
 }
 
+/// 跑 `orca-ide orchestration check --all --json` 消费发给本 terminal 的消息。
+/// 清除 Orca 的 "You have N messages" 提示。legacy 消息只能 inspect, 忽略错误。
+pub fn orchestration_drain_all() {
+    let _ = std::process::Command::new("orca-ide")
+        .args(["orchestration", "check", "--all", "--json"])
+        .output();
+}
+
 /// 跑 `orca-ide orchestration inbox --json`, 解析全量 inbox 获取每个 handle 的未读数。
 /// 用于 TUI 显示 agent card 上的未读 badge。
 pub fn orchestration_inbox_unread() -> Result<std::collections::HashMap<String, usize>, String> {
