@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::model::{directory_sorted_with_mode, AgentMetrics, EventCategory, EventSeverity, Model, StatusCategory};
+use crate::model::{directory_sorted_with_mode, AgentMetrics, EventCategory, EventSeverity, Model, OrchMessage, StatusCategory};
 use crate::render::blocks;
 use crate::render::theme::Theme;
 use crate::shell::{ConnState, Shell, Tab};
@@ -1001,8 +1001,8 @@ fn draw_group_detail(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, th
     }
 }
 
-/// Messages tab: inbox 消息流(按 thread_id 分组缩进, 最近在上)。
-/// 过滤模式: 只显示 filter_query 匹配的消息。
+/// Messages tab: 消息卡片(左 sender → 右 receiver)。
+/// 每张卡片 4 行: sender→receiver / subject / body / metadata。
 fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     let focused = matches!(shell.focus, crate::shell::FocusTarget::Messages);
     let block = blocks::bordered_block("Messages", focused, theme);
@@ -1018,76 +1018,21 @@ fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
         return;
     }
 
-    // 过滤: filter_active 时只显示匹配消息
+    // 过滤
     let filtered_ids: Option<Vec<String>> = if shell.filter_active {
         let q = shell.filter_query.as_deref().unwrap_or("");
-        if q.is_empty() {
-            None
-        } else {
-            Some(crate::model::messages_filter_ids(&model.messages, q))
-        }
-    } else {
-        None
-    };
+        if q.is_empty() { None }
+        else { Some(crate::model::messages_filter_ids(&model.messages, q)) }
+    } else { None };
 
-    // 消息列表: 最新在上(rev 遍历 VecDeque)
-    let items: Vec<ListItem> = model
-        .messages
-        .iter()
-        .rev()
-        .filter(|msg| {
-            // 过滤检查
-            match &filtered_ids {
-                Some(ids) => ids.contains(&msg.id),
-                None => true,
-            }
-        })
-        .map(|msg| {
-            let from = crate::render::truncate_width(&msg.from_handle, 16);
-            let subject = crate::render::truncate_width(&msg.subject, 50);
-            let time = crate::render::truncate_width(&msg.created_at, 19);
-
-            // thread 分组缩进: thread 消息前加 "  " 缩进 + ↩ 标记
-            let (indent, thread_mark) = if msg.thread_id.is_some() {
-                ("  ", "↩")
-            } else {
-                ("", "·")
-            };
-
-            // 已读/未读指示: read==0 = 未读(加粗), read!=0 = 已读(暗淡)
-            let (fg_subject, modifier) = if msg.read == 0 {
-                (theme.fg, Modifier::BOLD)
-            } else {
-                (theme.muted, Modifier::empty())
-            };
-
-            // 已读标记
-            let read_mark = if msg.read != 0 { "✓" } else { " " };
-
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{}{} ", indent, thread_mark),
-                    Style::default().fg(theme.accent),
-                ),
-                Span::styled(
-                    crate::render::pad_left(&from, 16),
-                    Style::default().fg(theme.working),
-                ),
-                Span::styled(" → ", Style::default().fg(theme.muted)),
-                Span::styled(
-                    crate::render::pad_left(&subject, 50),
-                    Style::default().fg(fg_subject).add_modifier(modifier),
-                ),
-                Span::styled(
-                    format!(" {} ", read_mark),
-                    Style::default().fg(theme.success),
-                ),
-                Span::styled(format!(" {}", time), Style::default().fg(theme.muted)),
-            ]))
+    let msgs: Vec<&OrchMessage> = model.messages.iter().rev()
+        .filter(|msg| match &filtered_ids {
+            Some(ids) => ids.contains(&msg.id),
+            None => true,
         })
         .collect();
 
-    if items.is_empty() {
+    if msgs.is_empty() {
         let no_match = Paragraph::new(Span::styled(
             "(no messages match filter)",
             Style::default().fg(theme.muted),
@@ -1096,20 +1041,142 @@ fn draw_messages(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme:
         return;
     }
 
-    let len = items.len();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(theme.selection_bg)
-            .fg(theme.selection_fg),
-    );
+    let msg_card_h = 4u16;
+    let msg_gap = 0u16;
+    let avail = inner.width as usize;
+    let indent = 2usize;
+    let chars_per_line = avail.saturating_sub(indent);
 
-    let mut state = ListState::default();
-    if len > 0 {
-        state.select(Some(shell.cursor.min(len - 1)));
+    // 计算 scroll
+    let total_h = (msgs.len() as u16) * (msg_card_h + msg_gap);
+    let scroll_y = match shell.manual_scroll {
+        Some(off) => off.min(total_h.saturating_sub(inner.height)),
+        None => {
+            let cursor_y = (shell.cursor as u16) * (msg_card_h + msg_gap);
+            if cursor_y + msg_card_h > inner.height {
+                cursor_y + msg_card_h - inner.height
+            } else {
+                0
+            }
+        }
+    };
+
+    for (idx, msg) in msgs.iter().enumerate() {
+        let base_y = (idx as u16) * (msg_card_h + msg_gap);
+        let adj_y = base_y.saturating_sub(scroll_y) + inner.y;
+        // 视口剔除
+        if adj_y + msg_card_h < inner.y || adj_y >= inner.y + inner.height {
+            continue;
+        }
+        let max_h = (inner.y + inner.height).saturating_sub(adj_y).min(msg_card_h);
+        let card_area = Rect { x: inner.x, y: adj_y, width: inner.width, height: max_h };
+
+        let selected = idx == shell.cursor;
+        let unread = msg.read == 0;
+        let bg = if selected { Color::Rgb(49, 62, 96) }
+                 else if unread { Color::Rgb(34, 35, 52) }
+                 else { Color::Rgb(24, 24, 37) };
+        let bg_style = Style::default().bg(bg);
+        let bar_fg = if unread { theme.accent } else { theme.muted };
+
+        f.render_widget(ratatui::widgets::Clear, card_area);
+
+        let bar = Span::styled("\u{258c}", Style::default().fg(bar_fg).bg(bg)); // ▌
+        let gap = Span::styled(" ", bg_style);
+        let subject_style = if unread {
+            Style::default().fg(theme.fg).bg(bg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted).bg(bg)
+        };
+        let muted_style = Style::default().fg(theme.muted).bg(bg);
+        let from_style = Style::default().fg(theme.working).bg(bg);
+        let to_style = Style::default().fg(theme.success).bg(bg);
+
+        // ── row 0: sender_tag (left) → receiver_tag (right) ──
+        let from_tag = handle_tag(&msg.from_handle);
+        let to_tag = handle_tag(&msg.to_handle);
+        let from_title = model.directory.get(&msg.from_handle)
+            .and_then(|a| a.title.as_deref()).unwrap_or("");
+        let to_title = model.directory.get(&msg.to_handle)
+            .and_then(|a| a.title.as_deref()).unwrap_or("");
+        let from_disp = if !from_title.is_empty() {
+            format!("{} {}", from_tag, crate::render::truncate_width(from_title, chars_per_line.saturating_sub(20)))
+        } else { from_tag.to_string() };
+        let to_disp = if !to_title.is_empty() {
+            format!("{} {}", to_tag, crate::render::truncate_width(to_title, chars_per_line.saturating_sub(20)))
+        } else { to_tag.to_string() };
+        let arrow = " \u{2192} "; // →
+        let from_w = unicode_width::UnicodeWidthStr::width(from_disp.as_str());
+        let arrow_w = unicode_width::UnicodeWidthStr::width(arrow);
+        let to_w = unicode_width::UnicodeWidthStr::width(to_disp.as_str());
+        let pad_mid = avail.saturating_sub(indent + from_w + arrow_w + to_w);
+        let row0 = Line::from(vec![
+            bar.clone(), gap.clone(),
+            Span::styled(from_disp, from_style),
+            Span::styled(arrow, muted_style),
+            Span::styled(" ".repeat(pad_mid), bg_style),
+            Span::styled(to_disp, to_style),
+        ]);
+        f.render_widget(row0, Rect { x: card_area.x, y: adj_y, width: card_area.width, height: 1 });
+
+        if max_h < 2 { continue; }
+
+        // ── row 1: subject ──
+        let subj_text = if msg.subject.is_empty() { "(no subject)" } else { &msg.subject };
+        let subj_trunc = crate::render::truncate_width(subj_text, chars_per_line);
+        let subj_w = unicode_width::UnicodeWidthStr::width(subj_trunc.as_str());
+        let row1 = Line::from(vec![
+            bar.clone(), gap.clone(),
+            Span::styled(subj_trunc, subject_style),
+            Span::styled(" ".repeat(chars_per_line.saturating_sub(subj_w)), bg_style),
+        ]);
+        f.render_widget(row1, Rect { x: card_area.x, y: adj_y + 1, width: card_area.width, height: 1 });
+
+        if max_h < 3 { continue; }
+
+        // ── row 2: body preview ──
+        let body_text = msg.body.trim();
+        let body_trunc = if body_text.is_empty() {
+            String::new()
+        } else {
+            crate::render::truncate_width(body_text, chars_per_line)
+        };
+        let body_w = unicode_width::UnicodeWidthStr::width(body_trunc.as_str());
+        let row2 = Line::from(vec![
+            bar.clone(), gap.clone(),
+            Span::styled(body_trunc, muted_style),
+            Span::styled(" ".repeat(chars_per_line.saturating_sub(body_w)), bg_style),
+        ]);
+        f.render_widget(row2, Rect { x: card_area.x, y: adj_y + 2, width: card_area.width, height: 1 });
+
+        if max_h < 4 { continue; }
+
+        // ── row 3: metadata ──
+        let read_mark = if unread { "\u{25cf}" } else { "\u{2713}" }; // ● / ✓
+        let read_color = if unread { theme.accent } else { theme.success };
+        let time_short = msg.created_at.get(5..19).unwrap_or(&msg.created_at).to_string();
+        let mut meta_parts: Vec<(String, Color)> = vec![
+            (read_mark.to_string(), read_color),
+            (msg.msg_type.clone(), theme.muted),
+        ];
+        if msg.thread_id.is_some() {
+            meta_parts.push(("thread".to_string(), theme.working));
+        }
+        meta_parts.push((time_short, theme.muted));
+        let mut meta_spans: Vec<Span> = vec![bar, gap];
+        for (i, (text, color)) in meta_parts.iter().enumerate() {
+            if i > 0 {
+                meta_spans.push(Span::styled(" \u{00b7} ", muted_style));
+            }
+            meta_spans.push(Span::styled(text.clone(), Style::default().fg(*color).bg(bg)));
+        }
+        let meta_w: usize = meta_spans.iter().map(|s| {
+            unicode_width::UnicodeWidthStr::width(s.content.as_ref())
+        }).sum();
+        let meta_pad = avail.saturating_sub(meta_w);
+        meta_spans.push(Span::styled(" ".repeat(meta_pad), bg_style));
+        f.render_widget(Line::from(meta_spans), Rect { x: card_area.x, y: adj_y + 3, width: card_area.width, height: 1 });
     }
-
-    f.render_stateful_widget(list, inner, &mut state);
-
 }
 /// 输入栏: insert_mode 时显示 input_buf + 光标。
 fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
