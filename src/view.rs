@@ -2797,14 +2797,30 @@ fn draw_group_overlay(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, t
         Span::styled("new group", new_style),
     ]));
 
-    // 空行 + hint
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
+    // 滚动窗口: cursor 始终可见, hint 固定在底部
+    let visible_h = inner.height.saturating_sub(2) as usize; // 留空行+hint
+    let total = list_len;
+    let start = if total <= visible_h {
+        0
+    } else if cursor < visible_h / 2 {
+        0
+    } else if cursor >= total.saturating_sub(visible_h / 2) {
+        total.saturating_sub(visible_h)
+    } else {
+        cursor - visible_h / 2
+    };
+    let end = (start + visible_h).min(total);
+    let visible: Vec<Line> = lines[start..end].to_vec();
+
+    let mut all = visible;
+    // 空行 + hint (固定在底部, 不随滚动)
+    all.push(Line::from(""));
+    all.push(Line::from(Span::styled(
         " j/k:navigate  Enter:join/leave  h:handshake(broadcast)  Esc:close",
         Style::default().fg(theme.muted),
     )));
 
-    let para = Paragraph::new(lines);
+    let para = Paragraph::new(all);
     f.render_widget(para, inner);
 }
 
