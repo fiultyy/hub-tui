@@ -2253,27 +2253,19 @@ fn handle_overlay_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<
                     shell.group_creating = false;
                     vec![]
                 } else {
-                    // 创建 group 并把当前 agent 加入
+                    // 创建 group 并把当前选中 agent 加入(hub-tui 自己不需要在 group 里)
                     let handle = match selected_agent_handle(model, shell) {
                         Some(h) => h,
                         None => return vec![],
                     };
-                    let self_h = std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default();
                     model.groups.entry(name.clone()).or_default().insert(handle.clone());
-                    if !self_h.is_empty() {
-                        model.groups.entry(name.clone()).or_default().insert(self_h.clone());
-                    }
                     shell.push_toast(format!("Group '{name}' created + {handle} joined"));
                     shell.group_creating = false;
                     shell.group_create_buf.clear();
-                    let mut cmds = vec![
-                        Cmd::PersistGroupJoin { name: name.clone(), handle },
-                    ];
-                    if !self_h.is_empty() {
-                        cmds.push(Cmd::PersistGroupJoin { name, handle: self_h });
-                    }
-                    cmds.push(Cmd::WriteDirectory);
-                    cmds
+                    vec![
+                        Cmd::PersistGroupJoin { name, handle },
+                        Cmd::WriteDirectory,
+                    ]
                 }
             }
             // 列表模式: j/k 导航
