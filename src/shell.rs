@@ -8,19 +8,17 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Directory,
-    Groups,
     Messages,
 }
 
 impl Tab {
     /// 所有 tab 变体(按显示顺序)。
-    pub const ALL: [Tab; 3] = [Tab::Directory, Tab::Groups, Tab::Messages];
+    pub const ALL: [Tab; 2] = [Tab::Directory, Tab::Messages];
 
     /// 显示标签。
     pub fn label(self) -> &'static str {
         match self {
             Tab::Directory => "Directory",
-            Tab::Groups => "Groups",
             Tab::Messages => "Messages",
         }
     }
@@ -28,8 +26,7 @@ impl Tab {
     /// 下一 tab(循环)。
     pub fn next(self) -> Self {
         match self {
-            Tab::Directory => Tab::Groups,
-            Tab::Groups => Tab::Messages,
+            Tab::Directory => Tab::Messages,
             Tab::Messages => Tab::Directory,
         }
     }
@@ -39,7 +36,6 @@ impl Tab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
     Directory,
-    Groups,
     Messages,
     Input,
 }
@@ -86,8 +82,6 @@ pub struct Shell {
     pub overlay_content: Option<String>,
     /// 浮层滚动位置。
     pub overlay_scroll: usize,
-    /// Groups tab: 选中群组后显示成员详情浮层。
-    pub group_detail_active: bool,
     /// cheatsheet 浮层激活(? 键)。
     pub cheatsheet_active: bool,
     /// 编排任务浮层激活(t 键)。
@@ -202,7 +196,6 @@ impl Shell {
             search_active: false,
             search_query: String::new(),
             search_cursor: 0,
-            group_detail_active: false,
             cheatsheet_active: false,
             activity_active: false,
             history_cursor: None,

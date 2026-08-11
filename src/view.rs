@@ -1,7 +1,7 @@
 //! view.rs —— 范式 5 纯渲染层(immediate-mode, draw 读 &Model + &Shell,绝不 &mut)。
 //!
 //! 布局(从上到下):
-//! - TabBar(1 行): Directory / Groups / Messages
+//! - TabBar(1 行): Directory / Messages
 //! - 主区(bodyH = H - 6): 按当前 tab 渲染面板
 //! - 输入栏(1 行): insert_mode 显示 input_buf + 光标
 //! - 状态栏(1 行): spinner + 连接状态 + 快捷键提示
@@ -186,7 +186,7 @@ fn draw_too_small(f: &mut Frame, theme: &Theme) {
     f.render_widget(msg, f.area());
 }
 
-/// 顶部 TabBar: 3 tab, 当前高亮 + 数字标号 + 连接灯。
+/// 顶部 TabBar: 2 tab, 当前高亮 + 数字标号 + 连接灯。
 fn draw_tabbar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     let tabs = Tab::ALL;
     let mut spans: Vec<Span> = Vec::new();
@@ -222,16 +222,11 @@ fn draw_tabbar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     f.render_widget(para, area);
 }
 
-/// 主区: 按当前 tab 路由。group_detail_active 时叠加浮层。
+/// 主区: 按当前 tab 路由。
 fn draw_tab_body(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
     match shell.tab {
         Tab::Directory => draw_directory(f, model, shell, area, theme),
-        Tab::Groups => draw_groups(f, model, shell, area, theme),
         Tab::Messages => draw_messages(f, model, shell, area, theme),
-    }
-    // 群组详情浮层(叠加在 Groups tab 之上)
-    if shell.group_detail_active {
-        draw_group_detail(f, model, shell, area, theme);
     }
 }
 
@@ -833,173 +828,6 @@ fn draw_agent_card(
     f.render_widget(content, area);
 }
 
-/// Groups tab: 群组列表 + 成员。
-/// Enter 选中后弹出成员详情浮层; 也可通过命令面板 create/join/leave/broadcast。
-fn draw_groups(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
-    let focused = matches!(shell.focus, crate::shell::FocusTarget::Groups);
-    let block = blocks::bordered_block("Groups", focused, theme);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    if model.groups.is_empty() {
-        let empty = Paragraph::new(vec![
-            Line::from(Span::styled("(no groups)", Style::default().fg(theme.muted))),
-            Line::from(Span::styled(
-                "  i: input  group:<name> to create",
-                Style::default().fg(theme.muted),
-            )),
-        ]);
-        f.render_widget(empty, inner);
-        return;
-    }
-
-    // 排序: 按群组名
-    let mut names: Vec<&String> = model.groups.keys().collect();
-    names.sort();
-
-    let items: Vec<ListItem> = names
-        .iter()
-        .map(|name| {
-            let members = model.groups[*name].len();
-            // 列出前 3 个成员
-            let member_preview: Vec<String> = model.groups[*name]
-                .iter()
-                .take(3)
-                .map(|h| crate::render::truncate_width(h, 16))
-                .collect();
-            let extra = if members > 3 {
-                format!(" +{}", members - 3)
-            } else {
-                String::new()
-            };
-            let preview = member_preview.join(", ") + &extra;
-
-
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", name),
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("({}) ", members),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(preview, Style::default().fg(theme.fg)),
-            ]))
-        })
-        .collect();
-
-    let list_height = inner.height.saturating_sub(1); // 底部留一行给 hint
-    let list_area = Rect::new(inner.x, inner.y, inner.width, list_height);
-
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(theme.selection_bg)
-            .fg(theme.selection_fg),
-    );
-
-    let mut state = ListState::default();
-    if !names.is_empty() {
-        state.select(Some(shell.cursor.min(names.len() - 1)));
-    }
-
-    f.render_stateful_widget(list, list_area, &mut state);
-
-    // 底部提示行
-    let hint_y = inner.y + list_height;
-    if hint_y < inner.y + inner.height {
-        let hint = Paragraph::new(Span::styled(
-            " Enter:details  i:input  Ctrl-P:commands",
-            Style::default().fg(theme.muted),
-        ));
-        f.render_widget(hint, Rect::new(inner.x, hint_y, inner.width, 1));
-    }
-}
-
-/// Groups 成员详情浮层: 显示选中群组的全部成员列表。
-fn draw_group_detail(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme: &Theme) {
-    let mut names: Vec<&String> = model.groups.keys().collect();
-    names.sort();
-
-    let group_name = match names.get(shell.cursor) {
-        Some(n) => *n,
-        None => return,
-    };
-    let members = match model.groups.get(group_name) {
-        Some(m) => m,
-        None => return,
-    };
-
-    // 浮层居中
-    let overlay_w = (area.width.min(60)).max(30);
-    let overlay_h = (members.len() as u16 + 4).min(area.height.saturating_sub(4)).max(5);
-    let x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
-    let y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
-    let overlay_area = Rect::new(x, y, overlay_w, overlay_h);
-
-    // 半透明背景
-    let bg = Block::default()
-        .style(Style::default().bg(theme.bg));
-    f.render_widget(bg, area);
-
-    let block = Block::default()
-        .borders(ratatui::widgets::Borders::ALL)
-        .border_style(Style::default().fg(theme.accent))
-        .title(format!(" Group: {} ", group_name));
-    let inner = block.inner(overlay_area);
-    f.render_widget(block, overlay_area);
-
-    // 成员列表
-    let mut member_lines: Vec<Line> = Vec::new();
-    member_lines.push(Line::from(Span::styled(
-        format!(" {} members (j/k scroll, q close)", members.len()),
-        Style::default().fg(theme.muted),
-    )));
-    member_lines.push(Line::from("")); // 分隔线
-
-    let mut handles: Vec<&String> = members.iter().collect();
-    handles.sort();
-
-    for (i, handle) in handles.iter().enumerate() {
-        let truncated = crate::render::truncate_width(handle, overlay_w.saturating_sub(4) as usize);
-        // 查找 agent 对应的 title
-        let title = model.directory.get(*handle)
-            .and_then(|a| a.title.as_deref())
-            .unwrap_or("?");
-        let title_trunc = crate::render::truncate_width(title, 20);
-        let is_self = std::env::var("ORCA_TERMINAL_HANDLE")
-            .map(|h| h == **handle)
-            .unwrap_or(false);
-
-        let style = if is_self {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.fg)
-        };
-
-        member_lines.push(Line::from(vec![
-            Span::styled(format!(" {:>2}. ", i + 1), style),
-            Span::styled(format!("{truncated} "), style),
-            Span::styled(format!("({title_trunc})"), Style::default().fg(theme.muted)),
-        ]));
-    }
-
-    // 渲染带滚动
-    let needs_scroll = member_lines.len() as u16 > inner.height;
-    let scroll_offset = if needs_scroll {
-        shell.overlay_scroll.min(member_lines.len() - inner.height as usize)
-    } else {
-        0
-    };
-    let content = Paragraph::new(member_lines);
-    if needs_scroll {
-        f.render_widget(content.scroll((scroll_offset as u16, 0)), inner);
-    } else {
-        f.render_widget(content, inner);
-    }
-}
 
 /// Messages tab: 消息卡片(左 sender → 右 receiver)。
 /// 每张卡片 4 行: sender→receiver / subject / body / metadata。
@@ -1205,8 +1033,7 @@ fn draw_input_bar(f: &mut Frame, shell: &Shell, area: Rect, theme: &Theme) {
     } else {
         // 非 insert_mode: 提示
         let hint = match shell.tab {
-            Tab::Directory => "i:send  j/k:nav  Enter:select  s:switch  g:groups",
-            Tab::Groups => "i:send  j/k:navigate  g:messages",
+            Tab::Directory => "i:send  j/k:nav  Enter:select  s:switch  g:messages",
             Tab::Messages => "i:send  j/k:navigate  g:directory",
         };
         let para = Paragraph::new(Span::styled(hint, Style::default().fg(theme.muted)));
@@ -1321,7 +1148,6 @@ fn status_hint(shell: &Shell) -> String {
     if shell.cheatsheet_active
         || shell.overlay_content.is_some()
         || shell.worktree_ps_active
-        || shell.group_detail_active
         || shell.rule_overlay_active
         || shell.orch_tasks_active
         || shell.history_overlay_active
@@ -1342,8 +1168,7 @@ fn status_hint(shell: &Shell) -> String {
     }
     match shell.tab {
         Tab::Directory => " j/k:nav i:input s:switch p:pty w:worktree @:pin /:filter ?:help ".to_string(),
-        Tab::Groups => " j/k:nav Enter:detail g:next Tab:switch ?:help ".to_string(),
-        Tab::Messages => " j/k:nav d:del D:clear m:mark-read /:filter g:next ?:help ".to_string(),
+        Tab::Messages => " j/k:nav /:filter g:next ?:help ".to_string(),
     }
 }
 

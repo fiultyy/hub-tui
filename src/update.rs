@@ -516,7 +516,7 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
     if shell.quickswitch_active {
         return handle_quickswitch_key(model, shell, k);
     }
-    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.group_detail_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active || shell.template_overlay_active || shell.sched_overlay_active {
+    if shell.overlay_content.is_some() || shell.worktree_ps_active || shell.cheatsheet_active || shell.config_overlay_active || shell.orch_tasks_active || shell.activity_active || shell.history_overlay_active || shell.dashboard_active || shell.snippet_overlay_active || shell.rule_overlay_active || shell.macro_overlay_active || shell.views_overlay_active || shell.metrics_overlay_active || shell.note_overlay_active || shell.quick_actions_active || shell.alias_overlay_active || shell.hotkeys_overlay_active || shell.theme_overlay_active || shell.template_overlay_active || shell.sched_overlay_active {
         return handle_overlay_key(model, shell, k);
     }
     // Ctrl-W: toggle watch on current agent (non-insert mode)
@@ -666,8 +666,8 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             return vec![];
         }
 
-        // D(Shift+d): dashboard overlay — 排除 Messages tab(D=clear-all)
-        (KeyCode::Char('D'), KeyModifiers::SHIFT) if !shell.insert_mode && shell.tab != Tab::Messages => {
+        // D(Shift+d): dashboard overlay
+        (KeyCode::Char('D'), KeyModifiers::SHIFT) if !shell.insert_mode => {
             shell.dashboard_active = !shell.dashboard_active;
             if shell.dashboard_active {
                 shell.overlay_scroll = 0;
@@ -790,14 +790,12 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
             shell.tab = shell.tab.next();
             shell.cursor = 0;
             shell.insert_mode = false;
-            shell.group_detail_active = false;
             shell.selected_set.clear();
             shell.focus_mode = false;
             shell.input_buf.clear();
             // 同步 focus 到对应 tab
             shell.focus = match shell.tab {
                 Tab::Directory => FocusTarget::Directory,
-                Tab::Groups => FocusTarget::Groups,
                 Tab::Messages => FocusTarget::Messages,
             };
             return vec![];
@@ -813,7 +811,6 @@ fn handle_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<Cmd> {
                 // focus 回当前 tab
                 shell.focus = match shell.tab {
                     Tab::Directory => FocusTarget::Directory,
-                    Tab::Groups => FocusTarget::Groups,
                     Tab::Messages => FocusTarget::Messages,
                 };
                 return vec![];
@@ -870,18 +867,12 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
             vec![]
         }
 
-        // g: 切到 Groups tab
+        // g: 切到下一个 tab (Directory↔Messages)
         (KeyCode::Char('g'), KeyModifiers::NONE) => {
-            let next_tab = match shell.tab {
-                Tab::Directory => Tab::Groups,
-                Tab::Groups => Tab::Messages,
-                Tab::Messages => Tab::Directory,
-            };
-            shell.tab = next_tab;
+            shell.tab = shell.tab.next();
             shell.cursor = 0;
-            shell.focus = match next_tab {
+            shell.focus = match shell.tab {
                 Tab::Directory => FocusTarget::Directory,
-                Tab::Groups => FocusTarget::Groups,
                 Tab::Messages => FocusTarget::Messages,
             };
             vec![]
@@ -920,68 +911,10 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
                 }
                 vec![]
             }
-            Tab::Groups => {
-                // 选中群组: 切换成员详情浮层
-                if selected_group_name(model, shell).is_some() {
-                    shell.group_detail_active = !shell.group_detail_active;
-                    if shell.group_detail_active {
-                        shell.overlay_scroll = 0;
-                    }
-                }
-                vec![]
-            }
             Tab::Messages => {
-                // 选中消息后进入 reply 模式
-                let msgs: Vec<_> = model.messages.iter().rev().collect();
-                if let Some(msg) = msgs.get(shell.cursor) {
-                    let id = &msg.id;
-                    shell.insert_mode = true;
-                    shell.focus = FocusTarget::Input;
-                    shell.input_buf = format!("reply:{id} ");
-                }
+                // 只读观测 tab — Enter 无操作
                 vec![]
             }
-        },
-        // d(Messages tab): delete 当前消息(只删本地缓存)
-        (KeyCode::Char('d'), KeyModifiers::NONE) if shell.tab == Tab::Messages => {
-            let msgs: Vec<_> = model.messages.iter().rev().collect();
-            if let Some(msg) = msgs.get(shell.cursor) {
-                let msg_id = msg.id.clone();
-                // 从 VecDeque 中移除。messages 按 push_back 追加，rev 遍历取第 cursor 条。
-                if let Some(idx) = model.messages.iter().position(|m| m.id == msg_id) {
-                    model.messages.remove(idx);
-                }
-                // 修正 cursor
-                let len = model.messages.len();
-                if len == 0 {
-                    shell.cursor = 0;
-                } else if shell.cursor >= len {
-                    shell.cursor = len - 1;
-                }
-                shell.push_toast(format!("deleted: {msg_id}"));
-            }
-            vec![]
-        }
-        // D(Shift+d, Messages tab): clear all messages
-        (KeyCode::Char('D'), KeyModifiers::SHIFT) if shell.tab == Tab::Messages => {
-            let count = model.messages.len();
-            model.messages.clear();
-            shell.cursor = 0;
-            shell.push_toast(format!("cleared {count} messages"));
-            vec![]
-        }
-        // m(Messages tab): mark-read 当前消息(orchestration check --ack)
-        (KeyCode::Char('m'), KeyModifiers::NONE) if shell.tab == Tab::Messages => {
-            let msgs: Vec<_> = model.messages.iter().rev().collect();
-            if let Some(msg) = msgs.get(shell.cursor) {
-                let delivery_id = msg.id.clone();
-                // 本地也标记已读
-                if let Some(idx) = model.messages.iter().position(|m| m.id == delivery_id) {
-                    model.messages[idx].read = 1;
-                }
-                return vec![Cmd::MarkRead { delivery_id }];
-            }
-            vec![]
         }
         // s(in Directory tab): switch/activate selected agent's tab
         (KeyCode::Char('s'), KeyModifiers::NONE) => {
@@ -1086,13 +1019,11 @@ fn handle_normal_key(model: &mut Model, shell: &mut Shell, k: KeyEvent) -> Vec<C
 fn apply_view_snapshot(shell: &mut Shell, snap: ViewSnapshot) -> Vec<Cmd> {
     // Restore tab
     shell.tab = match snap.tab.as_str() {
-        "groups" => Tab::Groups,
         "messages" => Tab::Messages,
         _ => Tab::Directory,
     };
     shell.focus = match shell.tab {
         Tab::Directory => FocusTarget::Directory,
-        Tab::Groups => FocusTarget::Groups,
         Tab::Messages => FocusTarget::Messages,
     };
     shell.cursor = 0;
@@ -1248,27 +1179,28 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![Cmd::PersistGroupLeave { name: name.clone(), handle: self_handle }, Cmd::WriteDirectory];
     }
 
-    // 解析 "broadcast:<group> <message>" 格式(群组广播)
-    if let Some(rest) = buf.strip_prefix("broadcast:") {
-        let parts: Vec<&str> = rest.trim_start().splitn(2, ' ').collect();
-        let group_name = match parts.first() {
-            Some(&n) if !n.is_empty() => n.to_string(),
-            _ => return vec![],
-        };
-        let message = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+    // 解析 "broadcast:<message>" 格式(对 selected_set 广播)
+    if let Some(message) = buf.strip_prefix("broadcast:") {
+        let message = message.trim().to_string();
         if message.is_empty() {
+            shell.push_toast("broadcast: message cannot be empty".into());
             return vec![];
         }
-        // 从 model 提取群组成员 handles
-        let handles: Vec<String> = model.groups
-            .get(&group_name)
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default();
-        if handles.is_empty() {
-            shell.push_toast(format!("group '{group_name}' has no members"));
-            return vec![];
-        }
-        return vec![Cmd::GroupBroadcast { name: group_name, message, handles }];
+        let handles: Vec<String> = if shell.selected_set.is_empty() {
+            // 无选中 → 对 cursor 所在 agent
+            match selected_agent_handle(model, shell) {
+                Some(h) => vec![h],
+                None => {
+                    shell.push_toast("No agents selected (Space to select)".into());
+                    return vec![];
+                }
+            }
+        } else {
+            shell.selected_set.iter().cloned().collect()
+        };
+        let n = handles.len();
+        shell.push_toast(format!("Broadcasting to {n} agent(s)"));
+        return vec![Cmd::GroupBroadcast { name: "selected".to_string(), message, handles }];
     }
 
     // 解析 "create:command" 格式(在当前 worktree 创建终端)
@@ -1542,7 +1474,7 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
             let name = name.trim().to_string();
             if name.is_empty() { return vec![]; }
             let snapshot = ViewSnapshot {
-                tab: match shell.tab { Tab::Directory => "directory", Tab::Groups => "groups", Tab::Messages => "messages" }.into(),
+                tab: match shell.tab { Tab::Directory => "directory", Tab::Messages => "messages" }.into(),
                 filter_query: shell.filter_query.clone(),
                 sort_mode: model.sort_mode().label().to_string(),
                 selected_set: shell.selected_set.iter().cloned().collect(),
@@ -1830,7 +1762,6 @@ fn handle_input_key(model: &mut Model, _shell: &mut Shell, k: KeyEvent) -> Vec<C
             _shell.insert_mode = false;
             _shell.focus = match _shell.tab {
                 Tab::Directory => FocusTarget::Directory,
-                Tab::Groups => FocusTarget::Groups,
                 Tab::Messages => FocusTarget::Messages,
             };
             _shell.history_cursor = None; // reset recall on submit
@@ -2481,9 +2412,6 @@ fn list_len<'a>(model: &'a Model, shell: &Shell) -> std::borrow::Cow<'a, [String
                 std::borrow::Cow::Owned(sorted)
             }
         }
-        Tab::Groups => std::borrow::Cow::Owned(
-            model.groups.keys().cloned().collect::<Vec<_>>(),
-        ),
         Tab::Messages => {
             let all_ids: Vec<String> = model.messages.iter().map(|m| m.id.clone()).collect();
             if shell.filter_active {
@@ -2514,19 +2442,6 @@ fn selected_agent_handle(model: &Model, shell: &Shell) -> Option<String> {
     handles.get(shell.cursor).cloned()
 }
 
-/// 当前选中群组名(用于群组操作)。pub 供 command.rs 使用。
-pub fn selected_group_name_public(model: &Model, shell: &Shell) -> Option<String> {
-    selected_group_name(model, shell)
-}
-
-fn selected_group_name(model: &Model, shell: &Shell) -> Option<String> {
-    if shell.tab != Tab::Groups {
-        return None;
-    }
-    let mut names: Vec<String> = model.groups.keys().cloned().collect();
-    names.sort();
-    names.get(shell.cursor).cloned()
-}
 
 /// 鼠标点击命中测试: (x, y) 是否落在某个 agent card 上,返回 sorted index。
 /// 使用 view::directory_layout + directory_scroll, 与 draw_directory 完全一致。
@@ -2655,9 +2570,6 @@ mod tests {
         assert_eq!(shell.tab, Tab::Directory);
 
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Tab)));
-        assert_eq!(shell.tab, Tab::Groups);
-
-        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Tab)));
         assert_eq!(shell.tab, Tab::Messages);
 
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Tab)));
@@ -2784,53 +2696,6 @@ mod tests {
         assert_eq!(shell.toasts.len(), 1);
     }
 
-    #[test]
-    fn update_messages_delete_single() {
-        let mut model = Model::new();
-        let mut shell = Shell::new();
-        shell.tab = Tab::Messages;
-
-        // 添加 3 条消息
-        model.push_message(make_test_msg("m1", "alice", "bob", "hello"));
-        model.push_message(make_test_msg("m2", "bob", "alice", "world"));
-        model.push_message(make_test_msg("m3", "carol", "alice", "test"));
-
-        // cursor=0 → 最新消息(m3, 因为 rev)
-        shell.cursor = 0;
-        let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('d'))));
-        assert_eq!(model.messages.len(), 2);
-        // m3 应该被删除
-        assert!(model.messages.iter().all(|m| m.id != "m3"));
-    }
-
-    #[test]
-    fn update_messages_clear_all() {
-        let mut model = Model::new();
-        let mut shell = Shell::new();
-        shell.tab = Tab::Messages;
-
-        model.push_message(make_test_msg("m1", "alice", "bob", "hello"));
-        model.push_message(make_test_msg("m2", "bob", "alice", "world"));
-
-        let _ = update(&mut model, &mut shell, AppMsg::Key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)));
-        assert!(model.messages.is_empty());
-        assert_eq!(shell.cursor, 0);
-    }
-
-    #[test]
-    fn update_messages_mark_read() {
-        let mut model = Model::new();
-        let mut shell = Shell::new();
-        shell.tab = Tab::Messages;
-
-        model.push_message(make_test_msg("m1", "alice", "bob", "hello"));
-        shell.cursor = 0;
-
-        let cmds = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('m'))));
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::MarkRead { delivery_id } if delivery_id == "m1")));
-        // 本地也标记已读
-        assert_eq!(model.messages[0].read, 1);
-    }
 
     #[test]
     fn update_messages_filter_key() {
@@ -2959,7 +2824,7 @@ mod tests {
     fn digit_jump_ignored_on_non_directory_tab() {
         let mut model = Model::new();
         let mut shell = Shell::new();
-        shell.tab = Tab::Groups;
+        shell.tab = Tab::Messages;
         let _ = update(&mut model, &mut shell, AppMsg::Key(make_key(KeyCode::Char('1'))));
         assert!(shell.toasts.is_empty());
     }

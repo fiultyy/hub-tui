@@ -71,11 +71,6 @@ pub fn builtin_commands() -> Vec<Command> {
             jump_tab_directory,
         ),
         Command::new(
-            "jump groups",
-            "Go to Groups tab",
-            jump_tab_groups,
-        ),
-        Command::new(
             "jump messages",
             "Go to Messages tab",
             jump_tab_messages,
@@ -377,13 +372,6 @@ fn jump_tab_directory(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     vec![]
 }
 
-fn jump_tab_groups(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
-    shell.tab = crate::shell::Tab::Groups;
-    shell.cursor = 0;
-    shell.focus = crate::shell::FocusTarget::Groups;
-    vec![]
-}
-
 fn jump_tab_messages(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.tab = crate::shell::Tab::Messages;
     shell.cursor = 0;
@@ -679,10 +667,6 @@ fn spawn_pi(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     spawn_agent(model, shell, "pi", "pi")
 }
 
-fn selected_group(model: &Model, shell: &Shell) -> Option<String> {
-    crate::update::selected_group_name_public(model, shell)
-}
-
 fn create_group(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     shell.insert_mode = true;
     shell.focus = crate::shell::FocusTarget::Input;
@@ -697,25 +681,17 @@ fn join_group(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
     vec![]
 }
 
-fn leave_group(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
-    if let Some(name) = selected_group(model, shell) {
-        shell.insert_mode = true;
-        shell.focus = crate::shell::FocusTarget::Input;
-        shell.input_buf = format!("leave:{name}");
-    } else {
-        shell.push_toast("No group selected".into());
-    }
+fn leave_group(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "leave:".to_string();
     vec![]
 }
 
-fn broadcast_to_group(model: &Model, shell: &mut Shell) -> Vec<Cmd> {
-    if let Some(name) = selected_group(model, shell) {
-        shell.insert_mode = true;
-        shell.focus = crate::shell::FocusTarget::Input;
-        shell.input_buf = format!("broadcast:{name} ");
-    } else {
-        shell.push_toast("No group selected".into());
-    }
+fn broadcast_to_group(_model: &Model, shell: &mut Shell) -> Vec<Cmd> {
+    shell.insert_mode = true;
+    shell.focus = crate::shell::FocusTarget::Input;
+    shell.input_buf = "broadcast:".to_string();
     vec![]
 }
 
