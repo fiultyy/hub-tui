@@ -45,6 +45,10 @@ fn main() -> io::Result<()> {
 
     let mut out = stdout();
     execute!(out, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
+    // Set terminal title to avoid Orca Pi/OMP idle detection.
+    // Without this, Orca matches the shell prompt title and classifies
+    // hub-tui as an idle agent, injecting "You have N messages" + \r.
+    execute!(out, crossterm::terminal::SetTitle("hub-tui"))?;
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
 
     let model = Arc::new(RwLock::new(Model::new()));
@@ -100,6 +104,13 @@ fn main() -> io::Result<()> {
     // T2: 启动时立即拉一次数据(ADR-5)
     // 启动时立即全量刷新(不等 5s tick): agents + status + messages
     svc.execute(vec![
+        // Rename terminal to avoid Pi/OMP title pattern detection.
+        // If Orca detects a Pi/OMP title, it classifies hub-tui as idle agent
+        // and injects "You have N messages" + \r into the PTY.
+        update::Cmd::RenameTerminal {
+            handle: std::env::var("ORCA_TERMINAL_HANDLE").unwrap_or_default(),
+            new_title: "hub-tui".to_string(),
+        },
         update::Cmd::RefreshAgents,
         update::Cmd::RefreshStatus,
         update::Cmd::DrainMessages,
