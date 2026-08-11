@@ -182,22 +182,21 @@ fn run_loop(
                     svc.execute(cmds);
                 }
                 Event::Mouse(m) => {
-                    if m.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
-                        let cmds = update::update(
-                            &mut model.write(),
-                            shell,
-                            AppMsg::MouseLeftClick { x: m.column, y: m.row },
-                        );
-                        svc.execute(cmds);
+                    match m.kind {
+                        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                            let cmds = update::update(&mut model.write(), shell, AppMsg::MouseLeftClick { x: m.column, y: m.row });
+                            svc.execute(cmds);
+                        }
+                        crossterm::event::MouseEventKind::ScrollUp => {
+                            let cmds = update::update(&mut model.write(), shell, AppMsg::MouseScrollUp);
+                            svc.execute(cmds);
+                        }
+                        crossterm::event::MouseEventKind::ScrollDown => {
+                            let cmds = update::update(&mut model.write(), shell, AppMsg::MouseScrollDown);
+                            svc.execute(cmds);
+                        }
+                        _ => {}
                     }
-                }
-                Event::Mouse(m) if m.kind == crossterm::event::MouseEventKind::ScrollUp => {
-                    let cmds = update::update(&mut model.write(), shell, AppMsg::MouseScrollUp);
-                    svc.execute(cmds);
-                }
-                Event::Mouse(m) if m.kind == crossterm::event::MouseEventKind::ScrollDown => {
-                    let cmds = update::update(&mut model.write(), shell, AppMsg::MouseScrollDown);
-                    svc.execute(cmds);
                 }
                 Event::Resize(w, h) => {
                     let cmds = update::update(&mut model.write(), shell, AppMsg::Resize { width: w, height: h });
