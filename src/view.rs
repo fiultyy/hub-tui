@@ -412,7 +412,8 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
             LayoutItem::Card { sorted_idx } => {
                 if let Some(agent) = sorted.get(*sorted_idx).and_then(|h| model.directory.get(h)) {
                     let is_selected = *sorted_idx == shell.cursor;
-                    let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h };
+                    let max_h = (scroll_y + inner.height).saturating_sub(entry.y);
+                    let card_area = Rect { x: entry.x, y: adj_y, width: entry.w, height: entry.h.min(max_h) };
                     let unread = *model.unread_counts.get(&agent.handle).unwrap_or(&0);
                     let shell_sel = shell.selected_set.contains(&agent.handle);
                     let tags: Vec<String> = model.tags.get(&agent.handle).map(|s| {
