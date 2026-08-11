@@ -396,10 +396,9 @@ fn draw_directory(f: &mut Frame, model: &Model, shell: &Shell, area: Rect, theme
     };
     let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
     let layout = directory_layout(&sorted, model, inner.x, inner.width);
-    let scroll_y = if shell.manual_scroll > 0 {
-        shell.manual_scroll.min(layout.last().map(|e| e.y + e.h).unwrap_or(0))
-    } else {
-        directory_scroll(shell.cursor, &layout, inner.height)
+    let scroll_y = match shell.manual_scroll {
+        Some(offset) => offset.min(layout.iter().map(|e| e.y + e.h).max().unwrap_or(0)),
+        None => directory_scroll(shell.cursor, &layout, inner.height),
     };
 
     for entry in &layout {
