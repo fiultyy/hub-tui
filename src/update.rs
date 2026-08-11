@@ -174,10 +174,8 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
             handle_key(model, shell, k)
         }
 
-        // ──── 鼠标左键点击(选中 card) ────
         AppMsg::MouseLeftClick { x, y } => {
-            // Freeze current viewport so directory_scroll doesn't auto-jump
-            // when cursor moves to an edge card.
+            // Freeze current viewport
             if shell.manual_scroll.is_none() {
                 let sorted = if shell.filter_active {
                     let q = shell.filter_query.as_deref().unwrap_or("");
@@ -191,9 +189,24 @@ pub fn update(model: &mut Model, shell: &mut Shell, msg: AppMsg) -> Vec<Cmd> {
                 let sy = crate::view::compute_scroll_y(shell, &layout, shell.size.1.saturating_sub(5));
                 shell.manual_scroll = Some(sy);
             }
+            // 先检测 ✉ 按钮点击(卡片第 0 行, 最右 3 列)
+            if let Some((handle, idx)) = hit_test_msg_btn(model, shell, x, y) {
+                shell.cursor = idx;
+                shell.insert_mode = true;
+                shell.focus = FocusTarget::Input;
+                shell.input_buf = format!("to:{handle} ");
+                return vec![];
+            }
+            // 普通卡片选中
             if let Some(idx) = hit_test_card(model, shell, x, y) {
                 shell.cursor = idx;
             }
+            vec![]
+        }
+
+        // ──── 鼠标点击 ✉ 按钮(直接发消息, 由 MouseLeftClick 内部检测派发) ────
+        AppMsg::MouseMsgClick { x: _, y: _ } => {
+            // 已在 MouseLeftClick handler 中处理, 这里不会到达
             vec![]
         }
 
@@ -2629,6 +2642,46 @@ fn hit_test_card(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<usize> 
                 && y < adj_y + entry.h
             {
                 return Some(sorted_idx);
+            }
+        }
+    }
+    None
+}
+
+/// 检测点击是否落在卡片 ✉ 按钮上(第 0 行, 最右 3 列)。返回 (handle, sorted_idx)。
+fn hit_test_msg_btn(model: &Model, shell: &Shell, x: u16, y: u16) -> Option<(String, usize)> {
+    if !matches!(shell.tab, Tab::Directory) || model.directory.is_empty() {
+        return None;
+    }
+    let inner_x = 1u16;
+    let inner_y = 2u16;
+    let inner_w = shell.size.0.saturating_sub(2);
+    let inner_h = shell.size.1.saturating_sub(5);
+
+    let sorted = if shell.filter_active {
+        let q = shell.filter_query.as_deref().unwrap_or("");
+        let full = directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned);
+        crate::model::directory_filter_handles(&full, &model.directory, q, &model.tags)
+    } else {
+        directory_sorted_with_mode(&model.directory, model.sort_mode(), &model.pinned)
+    };
+    let sorted = crate::model::apply_focus_filter(sorted, shell.focus_mode, &shell.selected_set);
+    let layout = directory_layout(&sorted, model, inner_x, inner_w);
+    let scroll_y = crate::view::compute_scroll_y(shell, &layout, inner_h);
+
+    for entry in &layout {
+        if let LayoutItem::Card { sorted_idx } = entry.item {
+            if entry.y + entry.h <= scroll_y || entry.y >= scroll_y + inner_h {
+                continue;
+            }
+            let adj_y = entry.y.saturating_sub(scroll_y) + inner_y;
+            // ✉ 在第 0 行(adj_y), 最右 3 列 (w-3 .. w-1)
+            let btn_x_start = entry.x + entry.w.saturating_sub(3);
+            let btn_x_end = entry.x + entry.w;
+            if y == adj_y && x >= btn_x_start && x < btn_x_end {
+                if let Some(handle) = sorted.get(sorted_idx) {
+                    return Some((handle.clone(), sorted_idx));
+                }
             }
         }
     }

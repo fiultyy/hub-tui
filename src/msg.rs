@@ -44,6 +44,8 @@ pub enum AppMsg {
     Key(KeyEvent),
     /// 鼠标左键点击(终端坐标)。
     MouseLeftClick { x: u16, y: u16 },
+    /// 鼠标点击卡片✉按钮(终端坐标)。
+    MouseMsgClick { x: u16, y: u16 },
     /// 鼠标滚轮上滚。
     MouseScrollUp,
     /// 鼠标滚轮下滚。

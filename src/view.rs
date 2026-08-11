@@ -715,9 +715,15 @@ fn draw_agent_card(
     let id_tag = handle_tag(&agent.handle);
     let id_tag_str = format!(" {} ", id_tag);
     let id_tag_w = UnicodeWidthStr::width(id_tag_str.as_str());
+    let msg_btn = "\u{2709}"; // ✉
+    let msg_btn_w = unicode_width::UnicodeWidthStr::width(msg_btn);
+    let mid_pad = avail.saturating_sub(id_tag_w).saturating_sub(msg_btn_w + 2);
     let row0 = Line::from(vec![
         Span::styled(id_tag_str, Style::default().bg(cs.tag_bg).fg(theme.bg).add_modifier(Modifier::BOLD)),
-        Span::styled(" ".repeat(avail.saturating_sub(id_tag_w)), bg_style),
+        Span::styled(" ".repeat(mid_pad), bg_style),
+        Span::styled(" ".to_string(), bg_style),
+        Span::styled(msg_btn, Style::default().fg(theme.muted).bg(cs.bg)),
+        Span::styled(" ".to_string(), bg_style),
     ]);
 
     // ── rows 1-3: recap body (last_assistant_msg > prompt > preview_tail) ──
