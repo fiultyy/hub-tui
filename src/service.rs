@@ -242,6 +242,17 @@ impl Service {
                 crate::update::Cmd::PersistMessages(msgs) => {
                     self.persist_messages(&msgs);
                 }
+                crate::update::Cmd::ResetMessages => {
+                    let lock = Arc::clone(&self.cli_lock);
+                    thread::spawn(move || {
+                        let _guard = lock.lock();
+                        let _ = std::process::Command::new("orca-ide")
+                            .args(["orchestration", "reset", "--messages", "--json"])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    });
+                }
                 crate::update::Cmd::PersistActivityEvent(ev) => {
                     if let Some(db) = &self.db {
                         db.insert_event(&ev);

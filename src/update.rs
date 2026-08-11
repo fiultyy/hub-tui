@@ -122,6 +122,8 @@ pub enum Cmd {
     RemoveTemplate { name: String },
     /// 无操作。
     Noop,
+    /// spawn: `orca-ide orchestration reset --messages`。
+    ResetMessages,
     /// 退出。
     Quit,
 }
@@ -1779,6 +1781,12 @@ fn dispatch_input(model: &mut Model, shell: &mut Shell, buf: String) -> Vec<Cmd>
         return vec![];
     }
 
+    // reset:messages — purge all orchestration messages (clears Orca unread prompt)
+    if buf.trim() == "reset:messages" {
+        shell.push_toast("Resetting orchestration messages...".into());
+        model.messages.clear();
+        return vec![Cmd::ResetMessages];
+    }
     vec![]
 }
 
